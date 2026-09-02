@@ -13,8 +13,8 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/chronick/lookout/internal/ai"
-	"github.com/chronick/lookout/internal/store"
+	"github.com/algonormative/lookout/internal/ai"
+	"github.com/algonormative/lookout/internal/store"
 	collectorpb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	metricscollectorpb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 )

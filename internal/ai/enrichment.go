@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/chronick/lookout/internal/store"
+	"github.com/algonormative/lookout/internal/store"
 )
 
 // Enrich applies cost calculation, throughput, and anomaly detection to a span.

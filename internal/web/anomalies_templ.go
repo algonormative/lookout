@@ -9,7 +9,7 @@ import "github.com/a-h/templ"
 import templruntime "github.com/a-h/templ/runtime"
 
 import (
-	"github.com/chronick/lookout/internal/store"
+	"github.com/algonormative/lookout/internal/store"
 )
 
 func anomaliesPage(spans []store.SpanRecord) templ.Component {

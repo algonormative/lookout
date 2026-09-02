@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/chronick/lookout/internal/store"
+	"github.com/algonormative/lookout/internal/store"
 )
 
 func TestEnrichCost(t *testing.T) {

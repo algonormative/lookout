@@ -11,7 +11,7 @@ import templruntime "github.com/a-h/templ/runtime"
 import (
 	"fmt"
 
-	"github.com/chronick/lookout/internal/store"
+	"github.com/algonormative/lookout/internal/store"
 )
 
 type DashboardData struct {

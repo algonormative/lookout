@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/chronick/lookout/internal/ai"
-	"github.com/chronick/lookout/internal/store"
+	"github.com/algonormative/lookout/internal/ai"
+	"github.com/algonormative/lookout/internal/store"
 )
 
 func newTestServer(t *testing.T) (*Server, store.Store) {

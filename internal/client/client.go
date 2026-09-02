@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/chronick/lookout/internal/store"
+	"github.com/algonormative/lookout/internal/store"
 )
 
 // APIClient implements store.Store over HTTP, targeting a remote lookout server.

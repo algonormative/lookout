@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chronick/lookout/internal/ai"
-	"github.com/chronick/lookout/internal/store"
+	"github.com/algonormative/lookout/internal/ai"
+	"github.com/algonormative/lookout/internal/store"
 	gomcp "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )

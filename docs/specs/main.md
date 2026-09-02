@@ -302,7 +302,7 @@ All CLI flags have corresponding environment variables (see CLI section).
 
 ```yaml
 obs.lookout:
-  image: ghcr.io/chronick/lookout-go
+  image: ghcr.io/algonormative/lookout-go
   ports:
     - "4317:4317"
     - "4318:4318"

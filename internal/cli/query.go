@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chronick/lookout/internal/store"
+	"github.com/algonormative/lookout/internal/store"
 )
 
 // QueryTraces runs the "query traces" command.

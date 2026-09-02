@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/chronick/lookout/internal/ai"
-	"github.com/chronick/lookout/internal/store"
+	"github.com/algonormative/lookout/internal/ai"
+	"github.com/algonormative/lookout/internal/store"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"

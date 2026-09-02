@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/chronick/lookout/internal/store"
+	"github.com/algonormative/lookout/internal/store"
 )
 
 // Handler serves the web UI pages.

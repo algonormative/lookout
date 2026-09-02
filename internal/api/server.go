@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chronick/lookout/internal/ai"
-	"github.com/chronick/lookout/internal/store"
-	"github.com/chronick/lookout/internal/web"
+	"github.com/algonormative/lookout/internal/ai"
+	"github.com/algonormative/lookout/internal/store"
+	"github.com/algonormative/lookout/internal/web"
 )
 
 // Server is the analytics HTTP API server.

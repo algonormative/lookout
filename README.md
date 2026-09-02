@@ -32,7 +32,7 @@ bin/lookout serve
 docker run -d \
   -p 4317:4317 -p 4318:4318 -p 4320:4320 \
   -v lookout-data:/data \
-  ghcr.io/chronick/lookout:latest
+  ghcr.io/algonormative/lookout:latest
 ```
 
 ### Docker Compose

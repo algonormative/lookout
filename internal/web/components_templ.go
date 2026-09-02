@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/chronick/lookout/internal/store"
+	"github.com/algonormative/lookout/internal/store"
 )
 
 func statCard(label string, value string) templ.Component {
