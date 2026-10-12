@@ -96,11 +96,84 @@ func truncateString(s string, max int) string {
 	if max <= 0 || len(s) <= max {
 		return s
 	}
+	if out, ok := truncateJSONArray(s, max); ok {
+		return out
+	}
+	return headTruncate(s, max)
+}
+
+func headTruncate(s string, max int) string {
 	cut := max
 	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
 	return fmt.Sprintf("%s…[truncated %d bytes]", s[:cut], len(s)-cut)
+}
+
+func arrayMarker(n, bytes int) string {
+	return fmt.Sprintf(`{"role":"system","content":"[lookout: %d earlier items truncated, %d bytes]"}`, n, bytes)
+}
+
+// truncateJSONArray handles over-cap strings that are JSON arrays (chat
+// message lists, newest last). It drops elements from the front until the
+// result fits under max, prepending a marker element, so the newest items
+// survive and the output is still valid JSON. If even the last element alone
+// does not fit, that element is head-truncated and embedded as a JSON string.
+// ok is false when s is not a JSON array (caller falls back to head-truncation).
+func truncateJSONArray(s string, max int) (string, bool) {
+	if !strings.HasPrefix(strings.TrimSpace(s), "[") {
+		return "", false
+	}
+	var elems []json.RawMessage
+	if err := json.Unmarshal([]byte(s), &elems); err != nil || len(elems) == 0 {
+		return "", false
+	}
+	n := len(elems)
+	// tail[k] = serialized size of elems[k:] joined with commas.
+	tail := make([]int, n+1)
+	for i := n - 1; i >= 0; i-- {
+		tail[i] = tail[i+1] + len(elems[i])
+		if i < n-1 {
+			tail[i]++
+		}
+	}
+	droppedBytes := 0
+	for k := 1; k < n; k++ {
+		droppedBytes += len(elems[k-1])
+		marker := arrayMarker(k, droppedBytes)
+		if len(marker)+1+tail[k]+2 <= max {
+			parts := make([]string, 0, n-k+1)
+			parts = append(parts, marker)
+			for _, e := range elems[k:] {
+				parts = append(parts, string(e))
+			}
+			return "[" + strings.Join(parts, ",") + "]", true
+		}
+	}
+	// Even the last element alone is too big: drop all earlier items and
+	// head-truncate the last one, embedded as a JSON string.
+	last := string(elems[n-1])
+	droppedBytes = 0
+	for _, e := range elems[:n-1] {
+		droppedBytes += len(e)
+	}
+	marker := arrayMarker(n-1, droppedBytes)
+	budget := max - len(marker) - 6
+	if n == 1 {
+		marker = ""
+		budget = max - 4
+	}
+	for ; budget > 0; budget /= 2 {
+		enc, _ := json.Marshal(headTruncate(last, budget))
+		out := "[" + string(enc) + "]"
+		if marker != "" {
+			out = "[" + marker + "," + string(enc) + "]"
+		}
+		if len(out) <= max || budget < 16 {
+			return out, true
+		}
+	}
+	return "", false
 }
 
 // capValue applies the string cap recursively to nested arrays and maps.

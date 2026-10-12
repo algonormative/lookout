@@ -155,7 +155,7 @@ All settings via CLI flags or environment variables:
 ### Ingest volume controls
 
 - **Drop list.** A span whose resource `service.name` and span name match a pair is not stored. Children of a dropped span are re-parented to the nearest kept ancestor when the dropped span(s) are in the same OTLP export request; if the dropped span was exported in a different request, the child keeps its original (now dangling) parent id.
-- **Attribute cap.** Applies to span and event attributes (not resource attributes), including strings nested in arrays/maps.
+- **Attribute cap.** Applies to span and event attributes (not resource attributes), including strings nested in arrays/maps. If an over-cap string is a JSON array (e.g. `gen_ai.input.messages`), elements are dropped from the front so the newest items are kept, with a leading `{"role":"system","content":"[lookout: N earlier items truncated, M bytes]"}` marker; the result stays valid JSON.
 - **Disk space.** SQLite never shrinks its file on `DELETE`. When the hourly retention cleanup deletes spans, lookout runs a full `VACUUM` (then truncates the WAL), at most once per 24 hours per process. It holds the write lock for the duration, so ingest briefly waits; free disk equal to the DB size is needed while it runs.
 
 ## Seed Data

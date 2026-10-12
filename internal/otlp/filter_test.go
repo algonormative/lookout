@@ -2,6 +2,7 @@ package otlp
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -196,6 +197,84 @@ func TestTruncation(t *testing.T) {
 	// nil filter is a no-op
 	if a := attrsOf(t, ConvertTraceRequest(nil, req)[0].AttributesJSON); a["big"] != long {
 		t.Error("nil filter should not modify")
+	}
+}
+
+func TestTruncateJSONArrayKeepsNewest(t *testing.T) {
+	var elems []string
+	for i := 0; i < 20; i++ {
+		elems = append(elems, `{"role":"user","content":"msg-`+string(rune('a'+i))+strings.Repeat("x", 90)+`"}`)
+	}
+	in := "[" + strings.Join(elems, ",") + "]"
+	max := 600
+	got := truncateString(in, max)
+	if len(got) > max {
+		t.Fatalf("result %d bytes over cap %d", len(got), max)
+	}
+	var parsed []map[string]any
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatalf("not valid JSON: %v\n%s", err, got)
+	}
+	if !strings.Contains(got, `"msg-t`) {
+		t.Error("newest message must be kept")
+	}
+	if strings.Contains(got, `"msg-a`) {
+		t.Error("oldest message should be dropped")
+	}
+	dropped := 20 - (len(parsed) - 1)
+	total := 0
+	for _, e := range elems[:dropped] {
+		total += len(e)
+	}
+	want := arrayMarker(dropped, total)
+	if parsed[0]["role"] != "system" || !strings.HasPrefix(got, "["+want+",") {
+		t.Errorf("marker wrong, want %s in %.200s", want, got)
+	}
+	if !strings.HasSuffix(got, elems[19]+"]") {
+		t.Error("last element must be intact and last")
+	}
+	// Greedy: one more element would not have fit.
+	if dropped > 1 {
+		if len(arrayMarker(dropped-1, total-len(elems[dropped-1])))+1+len(strings.Join(elems[dropped-1:], ","))+2 <= max {
+			t.Error("dropped more than necessary")
+		}
+	}
+}
+
+func TestTruncateJSONArrayHugeLastElement(t *testing.T) {
+	huge := `{"role":"user","content":"` + strings.Repeat("y", 5000) + `"}`
+	in := `[{"role":"system","content":"sys"},` + huge + `]`
+	got := truncateString(in, 500)
+	if len(got) > 500 {
+		t.Fatalf("over cap: %d", len(got))
+	}
+	var parsed []any
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatalf("not valid JSON: %v", err)
+	}
+	if len(parsed) != 2 {
+		t.Fatalf("want marker + truncated string, got %d", len(parsed))
+	}
+	want := arrayMarker(1, len(`{"role":"system","content":"sys"}`))
+	if !strings.HasPrefix(got, "["+want+",") {
+		t.Errorf("marker wrong: %.150s", got)
+	}
+	s, ok := parsed[1].(string)
+	if !ok || !strings.Contains(s, "…[truncated") || !strings.HasPrefix(s, `{"role":"user"`) {
+		t.Errorf("last element should be head-truncated string, got %.100v", parsed[1])
+	}
+}
+
+func TestTruncateNonArrayUnchanged(t *testing.T) {
+	for _, in := range []string{
+		strings.Repeat("z", 50),
+		`{"a":"` + strings.Repeat("z", 50) + `"}`,
+		"[not json " + strings.Repeat("z", 50),
+	} {
+		want := fmt.Sprintf("%s…[truncated %d bytes]", in[:20], len(in)-20)
+		if got := truncateString(in, 20); got != want {
+			t.Errorf("got %q want %q", got, want)
+		}
 	}
 }
 
