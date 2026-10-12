@@ -91,7 +91,13 @@ func (h *Handler) handleTraceDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	traceDetailPage(traceID, spans).Render(ctx, w)
+	scores, _, err := h.store.QueryScores(ctx, store.ScoreFilter{TraceID: traceID, Asc: true, Limit: 1000})
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+
+	traceDetailPage(traceID, spans, scores).Render(ctx, w)
 }
 
 func (h *Handler) handleSessions(w http.ResponseWriter, r *http.Request) {

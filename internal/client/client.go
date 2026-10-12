@@ -194,6 +194,22 @@ func (c *APIClient) UpsertMetricRollup(_ context.Context, _ store.MetricRollup) 
 	return fmt.Errorf("upsert not supported via API client")
 }
 
+func (c *APIClient) UpsertScores(_ context.Context, _ []store.Score) ([]string, error) {
+	return nil, fmt.Errorf("scores not supported via API client")
+}
+
+func (c *APIClient) QueryScores(_ context.Context, _ store.ScoreFilter) ([]store.Score, string, error) {
+	return nil, "", fmt.Errorf("scores not supported via API client")
+}
+
+func (c *APIClient) CountScores(_ context.Context, _ store.ScoreFilter) (int64, error) {
+	return 0, fmt.Errorf("scores not supported via API client")
+}
+
+func (c *APIClient) QueryTraceList(_ context.Context, _ store.TraceListFilter) (*store.TraceListPage, error) {
+	return nil, fmt.Errorf("trace list not supported via API client")
+}
+
 func (c *APIClient) Cleanup(_ context.Context, _ int) (int64, error) {
 	return 0, fmt.Errorf("cleanup not supported via API client")
 }

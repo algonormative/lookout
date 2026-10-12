@@ -3,6 +3,7 @@ package otlp
 import (
 	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/algonormative/lookout/internal/ai"
@@ -49,6 +50,7 @@ func ConvertTraceRequest(f *Filter, resourceSpans []*tracepb.ResourceSpans) []st
 					ResourceJSON:     resJSON,
 					StatusCode:       int(span.GetStatus().GetCode()),
 					StatusMessage:    span.GetStatus().GetMessage(),
+					ServiceName:      service,
 					InsertedAt:       now,
 				}
 
@@ -57,6 +59,9 @@ func ConvertTraceRequest(f *Filter, resourceSpans []*tracepb.ResourceSpans) []st
 				// Also check resource attributes for agent info
 				if rs.GetResource() != nil {
 					extractSemanticAttrs(&rec, rs.GetResource().GetAttributes())
+				}
+				if rec.AgentSessionID == "" {
+					rec.AgentSessionID = fallbackSessionID(span.GetAttributes(), rs.GetResource().GetAttributes())
 				}
 
 				// Capture span events (prompts, completions, tool messages)
@@ -85,6 +90,37 @@ func resolveParent(parent string, dropped map[string]string) string {
 		parent = up
 	}
 	return parent
+}
+
+// fallbackSessionID resolves the session when agent.session_id is absent:
+// session.id (Claude Code's native telemetry), then langfuse.session.id. For
+// each key the span's attributes win over the resource's. The backfill in
+// store/backfill.go mirrors this order.
+func fallbackSessionID(spanAttrs, resAttrs []*commonpb.KeyValue) string {
+	for _, key := range []string{"session.id", "langfuse.session.id"} {
+		for _, attrs := range [][]*commonpb.KeyValue{spanAttrs, resAttrs} {
+			for _, kv := range attrs {
+				if kv.GetKey() == key {
+					if v := kvString(kv.GetValue()); v != "" {
+						return v
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// kvString renders scalar attribute values as text (session ids are sometimes
+// sent as ints).
+func kvString(v *commonpb.AnyValue) string {
+	switch x := v.GetValue().(type) {
+	case *commonpb.AnyValue_StringValue:
+		return x.StringValue
+	case *commonpb.AnyValue_IntValue:
+		return strconv.FormatInt(x.IntValue, 10)
+	}
+	return ""
 }
 
 func serviceName(res *resourcepb.Resource) string {

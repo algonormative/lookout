@@ -46,6 +46,9 @@ func NewServer(addr string, s store.Store, ring *store.Ring) *Server {
 	mux.HandleFunc("GET /v1/traces/{traceID}/conversation", srv.handleTraceConversation)
 	mux.HandleFunc("GET /v1/recent", srv.handleRecent)
 
+	// Scores + trace query (judge loop)
+	srv.registerScoreRoutes(mux)
+
 	// Sessions
 	mux.HandleFunc("GET /v1/sessions", srv.handleSessions)
 	mux.HandleFunc("GET /v1/sessions/{sessionID}", srv.handleSessionByID)
@@ -128,6 +131,23 @@ func (s *Server) handleTraceByID(w http.ResponseWriter, r *http.Request) {
 	spans, err := s.store.GetTrace(r.Context(), traceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if r.URL.Query().Get("include") == "scores" {
+		// Opt-in object form. The default body is a bare span array that
+		// existing clients decode directly, so it cannot grow a field.
+		scores, _, err := s.store.QueryScores(r.Context(), store.ScoreFilter{TraceID: traceID, Asc: true, Limit: 1000})
+		if err != nil {
+			writeStoreError(w, err)
+			return
+		}
+		if spans == nil {
+			spans = []store.SpanRecord{}
+		}
+		if scores == nil {
+			scores = []store.Score{}
+		}
+		writeJSON(w, map[string]any{"trace_id": traceID, "spans": spans, "scores": scores})
 		return
 	}
 	writeJSON(w, spans)

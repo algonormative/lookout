@@ -20,6 +20,8 @@ bin/lookout query traces --limit 5        # query recent spans
 bin/lookout query stats                   # aggregate stats
 bin/lookout query sessions                # agent sessions
 bin/lookout mcp                           # start MCP server (stdio)
+curl 'localhost:4320/v1/trace-list?service=nanoclaw-agent&root_name=claude_code.interaction&missing_score=promise_only:jev&order=asc&limit=50'
+                                          # judge loop: unscored traces -> GET /v1/traces/{id} -> judge -> POST /v1/scores
 bin/lookout dash                          # launch TUI dashboard
 bin/seed --sessions 5 --traces 10         # seed test data
 ```
@@ -35,7 +37,10 @@ internal/
     models.go                    # SpanRecord, MetricRollup, Session structs
     store.go                     # Store interface
     ring.go                      # In-memory ring buffer
-    sqlite.go                    # SQLite implementation
+    sqlite.go                    # SQLite implementation (schema, migrations, span queries)
+    scores.go                    # Score model, validation, upsert/query, cursors
+    tracelist.go                 # Trace read model (QueryTraceList) built from spans at query time
+    backfill.go                  # One-time batched backfill: service_name, session ids
   otlp/
     http.go                      # OTLP HTTP receiver (traces + metrics)
     grpc.go                      # OTLP gRPC receiver
@@ -60,6 +65,8 @@ internal/
     enrichment.go                # Cost calc, token throughput, anomaly detection
   api/
     server.go                    # Analytics HTTP API (net/http)
+    scores.go                    # /v1/scores, /api/public/scores (Langfuse alias)
+    tracelist.go                 # /v1/trace-list
     ws.go                        # WebSocket live stream
   cli/
     query.go                     # CLI query command implementation
@@ -73,7 +80,11 @@ internal/
 - AI enrichment: auto-extracts gen_ai.* and agent.* semantic attributes
 - Cost calculation: model + tokens -> USD using built-in pricing table
 - Metrics rollups: OTLP metrics aggregated into 1m/1h/1d buckets on ingest
-- Sessions: grouped by agent.session_id only
+- Sessions: grouped by `agent_session_id`, populated from `agent.session_id`, else `session.id` (Claude Code), else `langfuse.session.id` (span attrs, then resource attrs)
+- Scores + judges: judges are separate processes that poll `GET /v1/trace-list?...&missing_score=name:source` and post verdicts to `POST /v1/scores` (lookout never runs a judge). `scores` table upserts on id and is NOT touched by retention cleanup. Langfuse-shaped aliases at `/api/public/scores`. MCP: `score_trace`, `get_scores`, `query_trace_list`
+- Trace read model: no `traces` table; `QueryTraceList` is a query over `spans` (keyset on trace start + trace_id, trace-level predicates as `trace_id IN (...)`, summaries built in Go for the page). `spans.service_name` (indexed) comes from resource `service.name`. Root = earliest span with no parent or a parent absent from the trace
+- `GET /v1/traces/{id}` stays a bare span array; `?include=scores` returns `{trace_id, spans, scores}`
+- Migrations: `ALTER TABLE ... ADD COLUMN` in `migrate()`; row-level backfills run in the background (`startBackfill`, marker in the `meta` table), batched by rowid window so single-connection ingest interleaves. Tests call `WaitBackfill()`
 - Zero-config: sensible defaults, all options via CLI flags or env vars
 - Retention: automatic cleanup of spans older than N days; when rows were deleted, a full VACUUM runs at most once per 24h to shrink the file
 - Ingest volume (config env vars, all also `serve` flags): `LOOKOUT_DROP_SPANS` (default llm-proxy plumbing: postgres, auth, self, proxy_pre_call, batch_write_to_db, router; empty disables), `LOOKOUT_MAX_ATTR_BYTES` (default 32768; 0 disables), `LOOKOUT_SLIM_SPANS` (default `llm-proxy:raw_gen_ai_request`) + `LOOKOUT_SLIM_ATTR_BYTES` (default 2048). Pairs are `service.name:span name`. Applied in `otlp.ConvertTraceRequest` so HTTP and gRPC behave the same.

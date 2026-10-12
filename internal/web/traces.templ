@@ -69,7 +69,7 @@ templ tracesPage(spans []store.SpanRecord) {
 	}
 }
 
-templ traceDetailPage(traceID string, spans []store.SpanRecord) {
+templ traceDetailPage(traceID string, spans []store.SpanRecord, scores []store.Score) {
 	@layout("Trace " + shortID(traceID), "traces") {
 		<hgroup>
 			<h2>Trace Detail</h2>
@@ -81,11 +81,74 @@ templ traceDetailPage(traceID string, spans []store.SpanRecord) {
 		if len(spans) > 0 {
 			@traceSummary(spans)
 		}
+		<h3>Scores</h3>
+		@scoresTable(scores)
 		<h3>Conversation</h3>
 		@conversationView(spans)
 		<h3>All Spans</h3>
 		@spanTable(spans, false)
 	}
+}
+
+templ scoresTable(scores []store.Score) {
+	if len(scores) == 0 {
+		<p><em>No scores yet</em></p>
+	} else {
+		<table>
+			<thead>
+				<tr>
+					<th>Name</th>
+					<th>Value</th>
+					<th>Source</th>
+					<th>Span</th>
+					<th>Comment</th>
+					<th>When</th>
+				</tr>
+			</thead>
+			<tbody>
+				for _, sc := range scores {
+					<tr>
+						<td>{ sc.Name }</td>
+						<td class="mono">{ scoreValue(sc) }</td>
+						<td>
+							{ sc.Source }
+							if sc.JudgeVersion != "" {
+								<small>{ " " + sc.JudgeVersion }</small>
+							}
+						</td>
+						<td class="mono">
+							if sc.SpanID != "" {
+								{ shortID(sc.SpanID) }
+							} else {
+								trace
+							}
+						</td>
+						<td>{ sc.Comment }</td>
+						<td class="mono">{ formatNanoDateTime(uint64(sc.CreatedAt)) }</td>
+					</tr>
+				}
+			</tbody>
+		</table>
+	}
+}
+
+func scoreValue(sc store.Score) string {
+	switch sc.DataType {
+	case store.ScoreBoolean:
+		if sc.ValueNum != nil && *sc.ValueNum == 1 {
+			return "true"
+		}
+		return "false"
+	case store.ScoreCategorical:
+		if sc.ValueNum != nil {
+			return fmt.Sprintf("%s (%.2f)", sc.ValueStr, *sc.ValueNum)
+		}
+		return sc.ValueStr
+	}
+	if sc.ValueNum == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%.4g", *sc.ValueNum)
 }
 
 templ traceSummary(spans []store.SpanRecord) {

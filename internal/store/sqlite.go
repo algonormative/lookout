@@ -16,6 +16,9 @@ import (
 type SQLiteStore struct {
 	db         *sql.DB
 	lastVacuum time.Time // only touched by the single retention goroutine
+
+	backfillCancel context.CancelFunc
+	backfillDone   chan struct{} // closed when the background backfill returns
 }
 
 // NewSQLiteStore opens or creates a SQLite database at the given path.
@@ -31,6 +34,7 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	s.startBackfill()
 	return s, nil
 }
 
@@ -55,6 +59,7 @@ func (s *SQLiteStore) migrate() error {
 			agent_name        TEXT NOT NULL DEFAULT '',
 			agent_task_id     TEXT NOT NULL DEFAULT '',
 			agent_session_id  TEXT NOT NULL DEFAULT '',
+			service_name      TEXT NOT NULL DEFAULT '',
 			events_json       TEXT NOT NULL DEFAULT '[]',
 			cost_usd          REAL NOT NULL DEFAULT 0,
 			tokens_per_sec    REAL NOT NULL DEFAULT 0,
@@ -91,10 +96,22 @@ func (s *SQLiteStore) migrate() error {
 	// Migration: add events_json column if missing
 	s.db.Exec(`ALTER TABLE spans ADD COLUMN events_json TEXT NOT NULL DEFAULT '[]'`)
 
-	return nil
+	// Migration: spans.service_name (constant default, so O(1) on existing
+	// databases; the index build is a single table scan at startup, before the
+	// receivers listen). Existing rows are filled by the batched backfill.
+	s.db.Exec(`ALTER TABLE spans ADD COLUMN service_name TEXT NOT NULL DEFAULT ''`)
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_spans_service_name ON spans(service_name)`); err != nil {
+		return err
+	}
+
+	return s.migrateScores()
 }
 
 func (s *SQLiteStore) Close() error {
+	if s.backfillCancel != nil {
+		s.backfillCancel()
+		<-s.backfillDone
+	}
 	return s.db.Close()
 }
 
@@ -112,9 +129,9 @@ func (s *SQLiteStore) InsertSpans(ctx context.Context, spans []SpanRecord) error
 			attributes_json, resource_json,
 			status_code, status_message,
 			ai_system, ai_model, ai_input_tokens, ai_output_tokens,
-			agent_name, agent_task_id, agent_session_id,
+			agent_name, agent_task_id, agent_session_id, service_name,
 			events_json, cost_usd, tokens_per_sec, anomaly, inserted_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -133,7 +150,7 @@ func (s *SQLiteStore) InsertSpans(ctx context.Context, spans []SpanRecord) error
 			sp.AttributesJSON, sp.ResourceJSON,
 			sp.StatusCode, sp.StatusMessage,
 			sp.AISystem, sp.AIModel, sp.AIInputTokens, sp.AIOutputTokens,
-			sp.AgentName, sp.AgentTaskID, sp.AgentSessionID,
+			sp.AgentName, sp.AgentTaskID, sp.AgentSessionID, sp.ServiceName,
 			eventsJSON, sp.CostUSD, sp.TokensPerSec, sp.Anomaly,
 			sp.InsertedAt.UTC().Format(time.RFC3339),
 		)
@@ -544,7 +561,7 @@ const spanColumns = `trace_id, span_id, parent_span_id, name, kind,
 	attributes_json, resource_json,
 	status_code, status_message,
 	ai_system, ai_model, ai_input_tokens, ai_output_tokens,
-	agent_name, agent_task_id, agent_session_id,
+	agent_name, agent_task_id, agent_session_id, service_name,
 	events_json, cost_usd, tokens_per_sec, anomaly, inserted_at`
 
 func (s *SQLiteStore) querySpanRows(ctx context.Context, query string, args ...any) ([]SpanRecord, error) {
@@ -564,7 +581,7 @@ func (s *SQLiteStore) querySpanRows(ctx context.Context, query string, args ...a
 			&sp.AttributesJSON, &sp.ResourceJSON,
 			&sp.StatusCode, &sp.StatusMessage,
 			&sp.AISystem, &sp.AIModel, &sp.AIInputTokens, &sp.AIOutputTokens,
-			&sp.AgentName, &sp.AgentTaskID, &sp.AgentSessionID,
+			&sp.AgentName, &sp.AgentTaskID, &sp.AgentSessionID, &sp.ServiceName,
 			&sp.EventsJSON, &sp.CostUSD, &sp.TokensPerSec, &sp.Anomaly, &insertedStr,
 		); err != nil {
 			return nil, err

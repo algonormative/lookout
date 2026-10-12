@@ -77,6 +77,49 @@ func NewServer(s store.Store) *server.MCPServer {
 		gomcp.WithString("trace_id", gomcp.Description("Trace ID"), gomcp.Required()),
 	), h.getTraceConversation)
 
+	// -- Scores and trace query (judge loop) --
+	srv.AddTool(gomcp.NewTool("query_trace_list",
+		gomcp.WithDescription("List traces (one row per trace: root span, services, start, duration, span count, models, tokens, error flag, session, scores). Cursor-paged, newest first by default. Judge loop: filter with missing_score to find traces a judge has not scored yet."),
+		gomcp.WithString("service", gomcp.Description("Trace has a span from this service.name")),
+		gomcp.WithString("root_name", gomcp.Description("Root span name, e.g. claude_code.interaction")),
+		gomcp.WithArray("attr", gomcp.Description("key=value span attribute filters (all must match)"), gomcp.WithStringItems()),
+		gomcp.WithString("since", gomcp.Description("Trace start >= (e.g. 1h, 7d, or RFC3339); strongly recommended")),
+		gomcp.WithString("until", gomcp.Description("Trace start <=")),
+		gomcp.WithArray("missing_score", gomcp.Description("name:source; trace has no such score"), gomcp.WithStringItems()),
+		gomcp.WithArray("has_score", gomcp.Description("name:source; trace has such a score"), gomcp.WithStringItems()),
+		gomcp.WithString("order", gomcp.Description("asc or desc (default desc = newest first)")),
+		gomcp.WithString("cursor", gomcp.Description("next_cursor from a previous page")),
+		gomcp.WithNumber("limit", gomcp.Description("Max results (default 50, max 500)")),
+	), h.queryTraceList)
+
+	srv.AddTool(gomcp.NewTool("score_trace",
+		gomcp.WithDescription("Post a judge verdict (score) on a trace or span. Upserts on id, so retries are safe."),
+		gomcp.WithString("trace_id", gomcp.Description("Trace ID"), gomcp.Required()),
+		gomcp.WithString("name", gomcp.Description("Score name, e.g. promise_only"), gomcp.Required()),
+		gomcp.WithString("data_type", gomcp.Description("NUMERIC, BOOLEAN (value_num 0/1) or CATEGORICAL (value_str)"), gomcp.Required()),
+		gomcp.WithString("source", gomcp.Description("Who judged: jev, minicheck, qwen3.5-4b, eval, human..."), gomcp.Required()),
+		gomcp.WithNumber("value_num", gomcp.Description("Numeric value / 0-1 boolean / probability")),
+		gomcp.WithString("value_str", gomcp.Description("Category label for CATEGORICAL")),
+		gomcp.WithString("span_id", gomcp.Description("Span ID; omit for a trace-level score")),
+		gomcp.WithString("session_id", gomcp.Description("Defaults to the trace's session")),
+		gomcp.WithString("id", gomcp.Description("Client-supplied id for idempotency")),
+		gomcp.WithString("judge_version", gomcp.Description("Judge/prompt version")),
+		gomcp.WithString("comment", gomcp.Description("Free-text rationale")),
+		gomcp.WithObject("metadata", gomcp.Description("Arbitrary JSON object")),
+	), h.scoreTrace)
+
+	srv.AddTool(gomcp.NewTool("get_scores",
+		gomcp.WithDescription("Query scores posted by judges. Newest first unless order=asc; cursor-paged."),
+		gomcp.WithString("trace_id", gomcp.Description("Filter by trace")),
+		gomcp.WithString("span_id", gomcp.Description("Filter by span")),
+		gomcp.WithString("name", gomcp.Description("Filter by score name")),
+		gomcp.WithString("source", gomcp.Description("Filter by judge source")),
+		gomcp.WithString("since", gomcp.Description("created_at >= (e.g. 1h, 7d, or RFC3339)")),
+		gomcp.WithString("order", gomcp.Description("asc or desc (default desc)")),
+		gomcp.WithString("cursor", gomcp.Description("next_cursor from a previous page")),
+		gomcp.WithNumber("limit", gomcp.Description("Max results (default 50, max 1000)")),
+	), h.getScores)
+
 	// -- Analytical tools --
 	srv.AddTool(gomcp.NewTool("analyze_session",
 		gomcp.WithDescription("Deep analysis of a session: timeline, cost breakdown by model, error summary, and performance stats."),
@@ -248,6 +291,99 @@ func (h *handlers) getTraceConversation(ctx context.Context, req gomcp.CallToolR
 		return gomcp.NewToolResultError(fmt.Sprintf("trace %s not found", traceID)), nil
 	}
 	return jsonResult(ai.DecodeConversation(spans))
+}
+
+// -- Scores / trace list handlers --
+
+func (h *handlers) queryTraceList(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
+	f := store.TraceListFilter{
+		Service:  req.GetString("service", ""),
+		RootName: req.GetString("root_name", ""),
+		Since:    parseDuration(req.GetString("since", "")),
+		Until:    parseDuration(req.GetString("until", "")),
+		Asc:      req.GetString("order", "") == "asc",
+		Cursor:   req.GetString("cursor", ""),
+		Limit:    req.GetInt("limit", 0),
+	}
+	for _, v := range req.GetStringSlice("attr", nil) {
+		a, err := store.ParseAttr(v)
+		if err != nil {
+			return gomcp.NewToolResultError(err.Error()), nil
+		}
+		f.Attrs = append(f.Attrs, a)
+	}
+	for _, v := range req.GetStringSlice("missing_score", nil) {
+		r, err := store.ParseScoreRef(v)
+		if err != nil {
+			return gomcp.NewToolResultError(err.Error()), nil
+		}
+		f.Missing = append(f.Missing, r)
+	}
+	for _, v := range req.GetStringSlice("has_score", nil) {
+		r, err := store.ParseScoreRef(v)
+		if err != nil {
+			return gomcp.NewToolResultError(err.Error()), nil
+		}
+		f.Has = append(f.Has, r)
+	}
+	page, err := h.store.QueryTraceList(ctx, f)
+	if err != nil {
+		return gomcp.NewToolResultError(err.Error()), nil
+	}
+	return jsonResult(page)
+}
+
+func (h *handlers) scoreTrace(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
+	sc := store.Score{
+		ID:           req.GetString("id", ""),
+		TraceID:      req.GetString("trace_id", ""),
+		SpanID:       req.GetString("span_id", ""),
+		SessionID:    req.GetString("session_id", ""),
+		Name:         req.GetString("name", ""),
+		DataType:     req.GetString("data_type", ""),
+		ValueStr:     req.GetString("value_str", ""),
+		Source:       req.GetString("source", ""),
+		JudgeVersion: req.GetString("judge_version", ""),
+		Comment:      req.GetString("comment", ""),
+	}
+	args := req.GetArguments()
+	if _, ok := args["value_num"]; ok {
+		v := req.GetFloat("value_num", 0)
+		sc.ValueNum = &v
+	}
+	if m, ok := args["metadata"]; ok && m != nil {
+		b, err := json.Marshal(m)
+		if err != nil {
+			return gomcp.NewToolResultError("metadata: " + err.Error()), nil
+		}
+		sc.Metadata = b
+	}
+	scores := []store.Score{sc}
+	ids, err := h.store.UpsertScores(ctx, scores)
+	if err != nil {
+		return gomcp.NewToolResultError(err.Error()), nil
+	}
+	return jsonResult(map[string]any{"ids": ids, "score": scores[0]})
+}
+
+func (h *handlers) getScores(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
+	scores, next, err := h.store.QueryScores(ctx, store.ScoreFilter{
+		TraceID: req.GetString("trace_id", ""),
+		SpanID:  req.GetString("span_id", ""),
+		Name:    req.GetString("name", ""),
+		Source:  req.GetString("source", ""),
+		Since:   parseDuration(req.GetString("since", "")),
+		Asc:     req.GetString("order", "") == "asc",
+		Cursor:  req.GetString("cursor", ""),
+		Limit:   req.GetInt("limit", 0),
+	})
+	if err != nil {
+		return gomcp.NewToolResultError(err.Error()), nil
+	}
+	if scores == nil {
+		scores = []store.Score{}
+	}
+	return jsonResult(map[string]any{"scores": scores, "next_cursor": next})
 }
 
 // -- Analytical tool handlers --

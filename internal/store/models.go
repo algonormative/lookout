@@ -30,6 +30,9 @@ type SpanRecord struct {
 	AgentTaskID    string `json:"agent_task_id,omitempty"`
 	AgentSessionID string `json:"agent_session_id,omitempty"`
 
+	// ServiceName is the resource service.name of the producer.
+	ServiceName string `json:"service_name,omitempty"`
+
 	// Span events (prompts, completions, tool messages)
 	EventsJSON string `json:"events_json,omitempty"`
 
