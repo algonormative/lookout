@@ -16,7 +16,20 @@ type Config struct {
 	PushURL       string
 	PushInterval  int
 	APIURL        string // Remote API URL for CLI queries (e.g., http://host:4320)
+
+	// Ingest volume controls (see internal/otlp/filter.go).
+	DropSpans     string // "service:span,service:span" pairs not stored; "" disables
+	MaxAttrBytes  int    // truncate attribute strings longer than this; 0 disables
+	SlimSpans     string // "service:span" pairs whose large attribute values are removed; "" disables
+	SlimAttrBytes int    // on SlimSpans, remove attribute values larger than this
 }
+
+// DefaultDropSpans is the LiteLLM (llm-proxy) plumbing that has no analytic value.
+const DefaultDropSpans = "llm-proxy:postgres,llm-proxy:auth,llm-proxy:self," +
+	"llm-proxy:proxy_pre_call,llm-proxy:batch_write_to_db,llm-proxy:router"
+
+// DefaultSlimSpans repeats the root span's prompt/response content.
+const DefaultSlimSpans = "llm-proxy:raw_gen_ai_request"
 
 func Default() Config {
 	home, _ := os.UserHomeDir()
@@ -29,6 +42,10 @@ func Default() Config {
 		RetentionDays: 7,
 		PushURL:       "",
 		PushInterval:  60,
+		DropSpans:     DefaultDropSpans,
+		MaxAttrBytes:  32 * 1024,
+		SlimSpans:     DefaultSlimSpans,
+		SlimAttrBytes: 2 * 1024,
 	}
 }
 
@@ -65,5 +82,22 @@ func (c *Config) ApplyEnv() {
 	}
 	if v := os.Getenv("LOOKOUT_API_URL"); v != "" {
 		c.APIURL = v
+	}
+	// For these, a set-but-empty value is meaningful: it disables the rule.
+	if v, ok := os.LookupEnv("LOOKOUT_DROP_SPANS"); ok {
+		c.DropSpans = v
+	}
+	if v, ok := os.LookupEnv("LOOKOUT_SLIM_SPANS"); ok {
+		c.SlimSpans = v
+	}
+	if v := os.Getenv("LOOKOUT_MAX_ATTR_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.MaxAttrBytes = n
+		}
+	}
+	if v := os.Getenv("LOOKOUT_SLIM_ATTR_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.SlimAttrBytes = n
+		}
 	}
 }

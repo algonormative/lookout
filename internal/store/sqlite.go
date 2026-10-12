@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -13,7 +14,8 @@ import (
 
 // SQLiteStore implements Store using modernc.org/sqlite.
 type SQLiteStore struct {
-	db *sql.DB
+	db         *sql.DB
+	lastVacuum time.Time // only touched by the single retention goroutine
 }
 
 // NewSQLiteStore opens or creates a SQLite database at the given path.
@@ -504,7 +506,35 @@ func (s *SQLiteStore) Cleanup(ctx context.Context, retentionDays int) (int64, er
 	metricCutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour).Unix()
 	s.db.ExecContext(ctx, "DELETE FROM metric_rollups WHERE bucket_start < ?", metricCutoff)
 
+	if n > 0 {
+		s.maybeVacuum(ctx)
+	}
 	return n, nil
+}
+
+// vacuumInterval is the minimum time between full VACUUMs.
+const vacuumInterval = 24 * time.Hour
+
+// maybeVacuum reclaims file space after a cleanup that deleted rows. SQLite
+// never shrinks the file on DELETE; freed pages are only reused. Existing
+// databases were created with auto_vacuum=NONE, and switching that mode itself
+// requires a full VACUUM, so the simplest approach that works for old and new
+// databases alike is a plain VACUUM, throttled to once per vacuumInterval
+// (tracked in memory, so at most once per day per process start). This is a
+// small single-user DB, so the rewrite is quick, but it holds the write lock
+// (and our single connection) while it runs, so concurrent ingest briefly
+// waits (busy_timeout 5s; the receivers return an error on a longer stall and
+// the sender retries). The WAL is then truncated so the -wal file shrinks too.
+func (s *SQLiteStore) maybeVacuum(ctx context.Context) {
+	if !s.lastVacuum.IsZero() && time.Since(s.lastVacuum) < vacuumInterval {
+		return
+	}
+	s.lastVacuum = time.Now()
+	if _, err := s.db.ExecContext(ctx, "VACUUM"); err != nil {
+		log.Printf("vacuum error: %v", err)
+		return
+	}
+	s.db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
 }
 
 // Helpers

@@ -19,13 +19,15 @@ type GRPCReceiver struct {
 	store   store.Store
 	ring    *store.Ring
 	onSpans SpanCallback
+	filter  *Filter
 	server  *grpc.Server
 	addr    string
 }
 
 // NewGRPCReceiver creates a new OTLP gRPC receiver.
-func NewGRPCReceiver(addr string, s store.Store, ring *store.Ring, onSpans SpanCallback) *GRPCReceiver {
+func NewGRPCReceiver(addr string, s store.Store, ring *store.Ring, onSpans SpanCallback, filter *Filter) *GRPCReceiver {
 	r := &GRPCReceiver{
+		filter:  filter,
 		store:   s,
 		ring:    ring,
 		onSpans: onSpans,
@@ -62,7 +64,7 @@ type traceService struct {
 }
 
 func (s *traceService) Export(ctx context.Context, req *collectorpb.ExportTraceServiceRequest) (*collectorpb.ExportTraceServiceResponse, error) {
-	spans := ConvertTraceRequest(req.GetResourceSpans())
+	spans := ConvertTraceRequest(s.r.filter, req.GetResourceSpans())
 
 	for i := range spans {
 		ai.Enrich(&spans[i])

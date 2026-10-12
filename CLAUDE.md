@@ -38,10 +38,12 @@ internal/
     sqlite.go                    # SQLite implementation
   otlp/
     http.go                      # OTLP HTTP receiver (traces + metrics)
-    convert.go                   # Proto -> internal model conversion
+    grpc.go                      # OTLP gRPC receiver
+    convert.go                   # Proto -> internal model conversion (applies Filter)
+    filter.go                    # Ingest drop list, attribute cap, slim-span rule
     metrics.go                   # OTLP metrics -> rollup conversion
   web/
-    handlers.go                  # Web UI HTTP handlers (/ui/*)
+    handlers.go                  # Web UI HTTP handlers (served at /)
     layout.templ                 # Base HTML layout (pico.css + htmx)
     dashboard.templ              # Dashboard page (stats + recent spans)
     traces.templ                 # Traces list + trace detail
@@ -73,7 +75,8 @@ internal/
 - Metrics rollups: OTLP metrics aggregated into 1m/1h/1d buckets on ingest
 - Sessions: grouped by agent.session_id only
 - Zero-config: sensible defaults, all options via CLI flags or env vars
-- Retention: automatic cleanup of spans older than N days
+- Retention: automatic cleanup of spans older than N days; when rows were deleted, a full VACUUM runs at most once per 24h to shrink the file
+- Ingest volume (config env vars, all also `serve` flags): `LOOKOUT_DROP_SPANS` (default llm-proxy plumbing: postgres, auth, self, proxy_pre_call, batch_write_to_db, router; empty disables), `LOOKOUT_MAX_ATTR_BYTES` (default 32768; 0 disables), `LOOKOUT_SLIM_SPANS` (default `llm-proxy:raw_gen_ai_request`) + `LOOKOUT_SLIM_ATTR_BYTES` (default 2048). Pairs are `service.name:span name`. Applied in `otlp.ConvertTraceRequest` so HTTP and gRPC behave the same.
 - Web UI: templ + htmx on :4320/ — pico.css dark theme, htmx polling for live updates
 - Proto: uses go.opentelemetry.io/proto/otlp package (no codegen)
 

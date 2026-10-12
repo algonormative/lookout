@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -284,6 +285,50 @@ func TestCleanup(t *testing.T) {
 	all, _ := s.QuerySpans(ctx, SpanFilter{Limit: 10})
 	if len(all) != 1 || all[0].SpanID != "new1" {
 		t.Errorf("expected only new span remaining, got %v", all)
+	}
+}
+
+func TestCleanupVacuumsOncePerDay(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	mk := func(id string) SpanRecord {
+		return SpanRecord{
+			TraceID: id, SpanID: id, Name: "old", AttributesJSON: `{"k":"` + strings.Repeat("x", 200000) + `"}`,
+			StartTimeUnixNano: uint64(old.UnixNano()), EndTimeUnixNano: uint64(old.UnixNano()), InsertedAt: time.Now(),
+		}
+	}
+	freelist := func() int {
+		var n int
+		if err := s.db.QueryRow("PRAGMA freelist_count").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	s.InsertSpans(ctx, []SpanRecord{mk("a"), mk("b")})
+	if n, _ := s.Cleanup(ctx, 7); n != 2 {
+		t.Fatalf("deleted %d", n)
+	}
+	if fl := freelist(); fl != 0 {
+		t.Errorf("first cleanup should vacuum, freelist=%d", fl)
+	}
+
+	// Second cleanup within a day deletes rows but does not vacuum again.
+	s.InsertSpans(ctx, []SpanRecord{mk("c")})
+	if n, _ := s.Cleanup(ctx, 7); n != 1 {
+		t.Fatalf("deleted %d", n)
+	}
+	if freelist() == 0 {
+		t.Error("vacuum should be throttled to once per day")
+	}
+
+	// After the interval it runs again.
+	s.lastVacuum = time.Now().Add(-25 * time.Hour)
+	s.InsertSpans(ctx, []SpanRecord{mk("d")})
+	s.Cleanup(ctx, 7)
+	if fl := freelist(); fl != 0 {
+		t.Errorf("expected vacuum after interval, freelist=%d", fl)
 	}
 }
 

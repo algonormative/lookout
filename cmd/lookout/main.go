@@ -77,7 +77,16 @@ func cmdServe(args []string) {
 	fs.IntVar(&cfg.RingSize, "ring-size", cfg.RingSize, "Ring buffer capacity")
 	mcpAddr := fs.String("mcp-addr", ":4321", "MCP HTTP server address (empty to disable)")
 	fs.IntVar(&cfg.RetentionDays, "retention-days", cfg.RetentionDays, "Retention period in days")
+	fs.StringVar(&cfg.DropSpans, "drop-spans", cfg.DropSpans, "Comma-separated service:span pairs to drop at ingest (empty disables)")
+	fs.IntVar(&cfg.MaxAttrBytes, "max-attr-bytes", cfg.MaxAttrBytes, "Truncate attribute strings longer than N bytes (0 disables)")
+	fs.StringVar(&cfg.SlimSpans, "slim-spans", cfg.SlimSpans, "Comma-separated service:span pairs whose large attribute values are removed (empty disables)")
+	fs.IntVar(&cfg.SlimAttrBytes, "slim-attr-bytes", cfg.SlimAttrBytes, "On slim spans, remove attribute values larger than N bytes")
 	fs.Parse(args)
+
+	filter, err := otlp.NewFilter(cfg.DropSpans, cfg.SlimSpans, cfg.MaxAttrBytes, cfg.SlimAttrBytes)
+	if err != nil {
+		log.Fatalf("ingest filter: %v", err)
+	}
 
 	// Ensure DB directory exists
 	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0755); err != nil {
@@ -98,8 +107,8 @@ func cmdServe(args []string) {
 	apiServer := api.NewServer(cfg.APIAddr, sqlStore, ring)
 
 	// Create OTLP receivers
-	otlpHTTP := otlp.NewHTTPReceiver(cfg.HTTPAddr, sqlStore, ring, apiServer.BroadcastSpans)
-	otlpGRPC := otlp.NewGRPCReceiver(cfg.GRPCAddr, sqlStore, ring, apiServer.BroadcastSpans)
+	otlpHTTP := otlp.NewHTTPReceiver(cfg.HTTPAddr, sqlStore, ring, apiServer.BroadcastSpans, filter)
+	otlpGRPC := otlp.NewGRPCReceiver(cfg.GRPCAddr, sqlStore, ring, apiServer.BroadcastSpans, filter)
 
 	// Start servers
 	if err := otlpGRPC.Start(); err != nil {

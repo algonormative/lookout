@@ -27,13 +27,15 @@ type HTTPReceiver struct {
 	store    store.Store
 	ring     *store.Ring
 	onSpans  SpanCallback
-	server   *http.Server
+	filter   *Filter
+	server  *http.Server
 	addr     string
 }
 
 // NewHTTPReceiver creates a new OTLP HTTP receiver.
-func NewHTTPReceiver(addr string, s store.Store, ring *store.Ring, onSpans SpanCallback) *HTTPReceiver {
+func NewHTTPReceiver(addr string, s store.Store, ring *store.Ring, onSpans SpanCallback, filter *Filter) *HTTPReceiver {
 	r := &HTTPReceiver{
+		filter:  filter,
 		store:   s,
 		ring:    ring,
 		onSpans: onSpans,
@@ -87,7 +89,7 @@ func (r *HTTPReceiver) handleTraces(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	spans := ConvertTraceRequest(pbReq.GetResourceSpans())
+	spans := ConvertTraceRequest(r.filter, pbReq.GetResourceSpans())
 
 	// Enrich spans
 	for i := range spans {
