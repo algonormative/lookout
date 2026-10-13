@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -342,4 +343,41 @@ func TestDBDir(t *testing.T) {
 		t.Fatalf("new store: %v", err)
 	}
 	s.Close()
+}
+
+// A host-side reader (the status dashboard opens lookout.db directly) holds a
+// SHARED lock while it reads; a write that lands meanwhile must wait for it,
+// not fail at once with SQLITE_BUSY.
+func TestWriteWaitsForOtherReader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	s, err := NewSQLiteStore(path)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	ctx := context.Background()
+	s.InsertSpans(ctx, []SpanRecord{{TraceID: "t1", SpanID: "s1", Name: "root",
+		StartTimeUnixNano: 1, EndTimeUnixNano: 2, InsertedAt: time.Now()}})
+
+	<-s.backfillDone // keep the background backfill out of the measured window
+
+	other, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("open reader: %v", err)
+	}
+	defer other.Close()
+	tx, err := other.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	var n int
+	if err := tx.QueryRow("SELECT count(*) FROM spans").Scan(&n); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	time.AfterFunc(300*time.Millisecond, func() { tx.Rollback() })
+
+	if _, err := s.UpsertScores(ctx, []Score{{TraceID: "t1", Name: "promise_only",
+		DataType: "numeric", ValueNum: f64(1), Source: "jev"}}); err != nil {
+		t.Fatalf("write while another connection reads: %v", err)
+	}
 }

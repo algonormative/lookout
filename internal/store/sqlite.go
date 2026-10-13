@@ -27,7 +27,13 @@ type SQLiteStore struct {
 // An optional Options value enables the size cap, span archive, etc.; without
 // one the store behaves as plain retention-only storage.
 func NewSQLiteStore(dbPath string, opts ...Options) (*SQLiteStore, error) {
-	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL")
+	// modernc.org/sqlite takes pragmas as _pragma=name(value); the mattn-style
+	// _busy_timeout/_journal_mode keys are silently ignored, which left writes
+	// failing at once with SQLITE_BUSY whenever a host-side reader held the file.
+	// The journal stays in rollback (DELETE) mode on purpose: the writer runs in
+	// Docker's Linux VM and readers on the macOS host, and WAL's shared-memory
+	// index is not coherent across that file share.
+	db, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
