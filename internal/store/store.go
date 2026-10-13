@@ -35,6 +35,9 @@ type Store interface {
 	// Trace read model
 	QueryTraceList(ctx context.Context, filter TraceListFilter) (*TraceListPage, error)
 
+	// Full-text search over span content, grouped by trace
+	SearchTraces(ctx context.Context, filter SearchFilter) (*SearchPage, error)
+
 	// Maintenance
 	Cleanup(ctx context.Context, retentionDays int) (int64, error)
 	Close() error

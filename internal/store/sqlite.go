@@ -114,6 +114,9 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migratePayloads(); err != nil {
 		return err
 	}
+	if err := s.migrateFTS(); err != nil {
+		return err
+	}
 	return s.migrateScores()
 }
 
@@ -146,6 +149,12 @@ func (s *SQLiteStore) InsertSpans(ctx context.Context, spans []SpanRecord) error
 	}
 	defer putPayload.Close()
 
+	indexStmts, err := prepareIndex(ctx, tx)
+	if err != nil {
+		return err
+	}
+	defer indexStmts.close()
+
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO spans (
 			trace_id, span_id, parent_span_id, name, kind,
@@ -168,6 +177,7 @@ func (s *SQLiteStore) InsertSpans(ctx context.Context, spans []SpanRecord) error
 		if eventsJSON == "" {
 			eventsJSON = "[]"
 		}
+		fullEvents := eventsJSON
 		attrsJSON, eventsJSON, payload, err := packSpan(sp.AttributesJSON, eventsJSON, s.opts.CompressMinBytes)
 		if err != nil {
 			return fmt.Errorf("compress span %s: %w", sp.SpanID, err)
@@ -192,6 +202,10 @@ func (s *SQLiteStore) InsertSpans(ctx context.Context, spans []SpanRecord) error
 			if _, err := putPayload.ExecContext(ctx, sp.SpanID, codecFlate, payload); err != nil {
 				return fmt.Errorf("insert payload %s: %w", sp.SpanID, err)
 			}
+		}
+		nameCol, body := searchColumns(sp.Name, sp.StatusMessage, sp.AttributesJSON, fullEvents)
+		if err := indexSpanTx(ctx, indexStmts, sp.SpanID, nameCol, body); err != nil {
+			return fmt.Errorf("index span %s: %w", sp.SpanID, err)
 		}
 	}
 

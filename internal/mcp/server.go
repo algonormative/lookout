@@ -92,6 +92,16 @@ func NewServer(s store.Store) *server.MCPServer {
 		gomcp.WithNumber("limit", gomcp.Description("Max results (default 50, max 500)")),
 	), h.queryTraceList)
 
+	srv.AddTool(gomcp.NewTool("search_traces",
+		gomcp.WithDescription("Full-text search over trace content (span names, errors, Claude Code user prompts, LLM input/output message text). All terms must match; \"quoted phrases\" and trailing * prefixes work. Returns matching traces newest first with a snippet. Cursor-paged."),
+		gomcp.WithString("q", gomcp.Description("Search terms"), gomcp.Required()),
+		gomcp.WithString("service", gomcp.Description("Trace has a span from this service.name")),
+		gomcp.WithString("since", gomcp.Description("Trace start >= (e.g. 1h, 7d, or RFC3339)")),
+		gomcp.WithString("until", gomcp.Description("Trace start <=")),
+		gomcp.WithString("cursor", gomcp.Description("next_cursor from a previous page")),
+		gomcp.WithNumber("limit", gomcp.Description("Max results (default 50, max 500)")),
+	), h.searchTraces)
+
 	srv.AddTool(gomcp.NewTool("score_trace",
 		gomcp.WithDescription("Post a judge verdict (score) on a trace or span. Upserts on id, so retries are safe."),
 		gomcp.WithString("trace_id", gomcp.Description("Trace ID"), gomcp.Required()),
@@ -327,6 +337,21 @@ func (h *handlers) queryTraceList(ctx context.Context, req gomcp.CallToolRequest
 		f.Has = append(f.Has, r)
 	}
 	page, err := h.store.QueryTraceList(ctx, f)
+	if err != nil {
+		return gomcp.NewToolResultError(err.Error()), nil
+	}
+	return jsonResult(page)
+}
+
+func (h *handlers) searchTraces(ctx context.Context, req gomcp.CallToolRequest) (*gomcp.CallToolResult, error) {
+	page, err := h.store.SearchTraces(ctx, store.SearchFilter{
+		Q:       req.GetString("q", ""),
+		Service: req.GetString("service", ""),
+		Since:   parseDuration(req.GetString("since", "")),
+		Until:   parseDuration(req.GetString("until", "")),
+		Cursor:  req.GetString("cursor", ""),
+		Limit:   req.GetInt("limit", 0),
+	})
 	if err != nil {
 		return gomcp.NewToolResultError(err.Error()), nil
 	}

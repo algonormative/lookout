@@ -210,6 +210,10 @@ func (c *APIClient) QueryTraceList(_ context.Context, _ store.TraceListFilter) (
 	return nil, fmt.Errorf("trace list not supported via API client")
 }
 
+func (c *APIClient) SearchTraces(_ context.Context, _ store.SearchFilter) (*store.SearchPage, error) {
+	return nil, fmt.Errorf("search not supported via API client")
+}
+
 func (c *APIClient) Cleanup(_ context.Context, _ int) (int64, error) {
 	return 0, fmt.Errorf("cleanup not supported via API client")
 }

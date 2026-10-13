@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -60,6 +61,19 @@ func (h *Handler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleTraces(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	if q := r.URL.Query().Get("q"); q != "" {
+		page, err := h.store.SearchTraces(ctx, store.SearchFilter{Q: q, Cursor: r.URL.Query().Get("cursor"), Limit: queryInt(r, "limit", 50)})
+		if err != nil {
+			code := 500
+			if errors.Is(err, store.ErrInvalidInput) {
+				code = 400
+			}
+			http.Error(w, err.Error(), code)
+			return
+		}
+		searchResultsPage(q, page).Render(ctx, w)
+		return
+	}
 	filter := store.SpanFilter{
 		Agent:  r.URL.Query().Get("agent"),
 		Model:  r.URL.Query().Get("model"),

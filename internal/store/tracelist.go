@@ -13,6 +13,7 @@ import (
 type TraceListFilter struct {
 	Service  string       // some span of the trace has this resource service.name
 	RootName string       // a root span of the trace has this name
+	Match    string       // a span of the trace matches this FTS5 query (see BuildMatch)
 	Attrs    []AttrFilter // some span of the trace has attribute key == value (all must hold)
 	Since    time.Time    // trace start >= Since
 	Until    time.Time    // trace start <= Until
@@ -144,6 +145,13 @@ func (s *SQLiteStore) QueryTraceList(ctx context.Context, f TraceListFilter) (*T
 				SELECT 1 FROM spans p WHERE p.span_id = r.parent_span_id AND p.trace_id = r.trace_id)))`)
 		args = append(args, f.RootName)
 		args = append(args, boundArgs...)
+	}
+	if f.Match != "" {
+		wheres = append(wheres, `trace_id IN (SELECT sp.trace_id FROM span_fts
+			JOIN span_search ss ON ss.id = span_fts.rowid
+			JOIN spans sp ON sp.span_id = ss.span_id
+			WHERE span_fts MATCH ?)`)
+		args = append(args, f.Match)
 	}
 	for _, a := range f.Attrs {
 		if a.Key == "" || strings.ContainsAny(a.Key, `"`) {

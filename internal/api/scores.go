@@ -20,6 +20,7 @@ func (s *Server) registerScoreRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/scores", s.handlePostScores)
 	mux.HandleFunc("GET /v1/scores", s.handleGetScores)
 	mux.HandleFunc("GET /v1/trace-list", s.handleTraceList)
+	mux.HandleFunc("GET /v1/search", s.handleSearch)
 
 	// Langfuse-shaped aliases for tools that already speak that API.
 	mux.HandleFunc("POST /api/public/scores", s.handleLangfusePostScore)

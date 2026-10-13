@@ -26,6 +26,11 @@ func (s *SQLiteStore) startBackfill() {
 		if err := s.backfill(ctx); err != nil && ctx.Err() == nil {
 			log.Printf("backfill error: %v", err)
 		}
+		if ctx.Err() == nil {
+			if err := s.backfillFTS(ctx); err != nil && ctx.Err() == nil {
+				log.Printf("search backfill error: %v", err)
+			}
+		}
 	}()
 }
 
