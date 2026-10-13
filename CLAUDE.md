@@ -23,13 +23,15 @@ bin/lookout mcp                           # start MCP server (stdio)
 curl 'localhost:4320/v1/trace-list?service=nanoclaw-agent&root_name=claude_code.interaction&missing_score=promise_only:jev&order=asc&limit=50'
                                           # judge loop: unscored traces -> GET /v1/traces/{id} -> judge -> POST /v1/scores
 bin/lookout dash                          # launch TUI dashboard
+bin/lookout compact [--vacuum]            # compress pre-existing large spans (manual, batched, resumable)
+curl "localhost:4320/v1/search?q=deploy&since=24h"   # full-text search over traces
 bin/seed --sessions 5 --traces 10         # seed test data
 ```
 
 ## Layout
 
 ```
-cmd/lookout/main.go              # CLI entry point (serve, query, mcp)
+cmd/lookout/main.go              # CLI entry point (serve, query, mcp, compact)
 cmd/seed/main.go                 # Test data generator (OTLP sender)
 internal/
   config/config.go               # Shared configuration struct
@@ -40,7 +42,12 @@ internal/
     sqlite.go                    # SQLite implementation (schema, migrations, span queries)
     scores.go                    # Score model, validation, upsert/query, cursors
     tracelist.go                 # Trace read model (QueryTraceList) built from spans at query time
-    backfill.go                  # One-time batched backfill: service_name, session ids
+    backfill.go                  # One-time batched backfills: service_name/session ids, search index, user/trace_name/obs_type
+    retention.go                 # Options, size cap (enforceCap), pre-delete gzip JSONL archive
+    payload.go                   # Compressed span_payloads side table, lite attributes, Compact
+    fts.go                       # Contentless FTS5 index (span_fts), SearchTraces, snippets
+  genai/
+    messages.go                  # Decode gen_ai.*.messages JSON (shared by search indexer and conversation)
   otlp/
     http.go                      # OTLP HTTP receiver (traces + metrics)
     grpc.go                      # OTLP gRPC receiver
@@ -67,6 +74,7 @@ internal/
     server.go                    # Analytics HTTP API (net/http)
     scores.go                    # /v1/scores, /api/public/scores (Langfuse alias)
     tracelist.go                 # /v1/trace-list
+    search.go                    # /v1/search
     ws.go                        # WebSocket live stream
   cli/
     query.go                     # CLI query command implementation
@@ -88,6 +96,10 @@ internal/
 - Zero-config: sensible defaults, all options via CLI flags or env vars
 - Retention: automatic cleanup of spans older than N days; when rows were deleted, a full VACUUM runs at most once per 24h to shrink the file
 - Ingest volume (config env vars, all also `serve` flags): `LOOKOUT_DROP_SPANS` (default llm-proxy plumbing: postgres, auth, self, proxy_pre_call, batch_write_to_db, router; empty disables), `LOOKOUT_MAX_ATTR_BYTES` (default 32768; 0 disables), `LOOKOUT_SLIM_SPANS` (default `llm-proxy:raw_gen_ai_request`) + `LOOKOUT_SLIM_ATTR_BYTES` (default 2048). Pairs are `service.name:span name`. Applied in `otlp.ConvertTraceRequest` so HTTP and gRPC behave the same.
+- Storage (env vars, also `serve` flags): `LOOKOUT_MAX_DB_MB` (default 1024, 0 disables; used size = (page_count - freelist_count) * page_size; after hourly retention, delete whole traces oldest-first to 90% of the cap and force a VACUUM), `LOOKOUT_ARCHIVE_DIR` (default off; spans are appended to `spans-YYYY-MM-DD.jsonl.gz` and fsynced BEFORE any retention/cap delete), `LOOKOUT_COMPRESS_MIN_BYTES` (default 4096, 0 disables). Scores are never deleted.
+- Payload compression: spans over the threshold store a lite `attributes_json` (strings > 1 KB become `{"$lookout_ref":"payload","bytes":N}`) and the exact originals flate-compressed in `span_payloads`; `querySpanRows` restores them, so read paths must go through it (never `SELECT attributes_json` directly for content). `spans_payload_ad` / `spans_fts_ad` triggers cascade deletes; re-sent spans are deleted then inserted (not `INSERT OR REPLACE`) so the triggers fire. `lookout compact` converts old rows in batches (manual only).
+- Search: contentless FTS5 `span_fts` keyed by `span_search.id` (not spans.rowid, which VACUUM may renumber); indexed at ingest from the FULL values; `/v1/search`, MCP `search_traces`, search box on /traces. Snippets are cut in Go because contentless tables have no snippet().
+- Langfuse: `POST /api/public/otel/v1/traces` is the same handler as `/v1/traces` (gzip ok; `LOOKOUT_INGEST_KEY` gates that path only). Columns `user_id` (langfuse.user.id, else user.id), `trace_name`, `obs_type` (inferred generation/tool/span). Cost comes from `gen_ai.cost.total_cost` / `gen_ai.usage.cost` when > 0 else the pricing table. Conversation decoding of message attributes lives in `ai/messages.go`.
 - Web UI: templ + htmx on :4320/ — pico.css dark theme, htmx polling for live updates
 - Proto: uses go.opentelemetry.io/proto/otlp package (no codegen)
 
