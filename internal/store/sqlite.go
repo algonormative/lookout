@@ -111,6 +111,17 @@ func (s *SQLiteStore) migrate() error {
 		return err
 	}
 
+	// Migration: Langfuse identity columns (constant defaults, O(1)); existing
+	// rows are filled by the batched backfill.
+	for _, col := range []string{"user_id", "trace_name", "obs_type"} {
+		s.db.Exec(`ALTER TABLE spans ADD COLUMN ` + col + ` TEXT NOT NULL DEFAULT ''`)
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_spans_user_id ON spans(user_id) WHERE user_id != ''`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_spans_trace_name ON spans(trace_name) WHERE trace_name != ''`); err != nil {
+		return err
+	}
 	if err := s.migratePayloads(); err != nil {
 		return err
 	}
@@ -163,8 +174,9 @@ func (s *SQLiteStore) InsertSpans(ctx context.Context, spans []SpanRecord) error
 			status_code, status_message,
 			ai_system, ai_model, ai_input_tokens, ai_output_tokens,
 			agent_name, agent_task_id, agent_session_id, service_name,
-			events_json, cost_usd, tokens_per_sec, anomaly, inserted_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			events_json, cost_usd, tokens_per_sec, anomaly, inserted_at,
+			user_id, trace_name, obs_type
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return err
@@ -194,6 +206,7 @@ func (s *SQLiteStore) InsertSpans(ctx context.Context, spans []SpanRecord) error
 			sp.AgentName, sp.AgentTaskID, sp.AgentSessionID, sp.ServiceName,
 			eventsJSON, sp.CostUSD, sp.TokensPerSec, sp.Anomaly,
 			sp.InsertedAt.UTC().Format(time.RFC3339),
+			sp.UserID, sp.TraceName, sp.ObsType,
 		)
 		if err != nil {
 			return fmt.Errorf("insert span %s: %w", sp.SpanID, err)
@@ -620,7 +633,8 @@ const spanColumns = `trace_id, span_id, parent_span_id, name, kind,
 	status_code, status_message,
 	ai_system, ai_model, ai_input_tokens, ai_output_tokens,
 	agent_name, agent_task_id, agent_session_id, service_name,
-	events_json, cost_usd, tokens_per_sec, anomaly, inserted_at`
+	events_json, cost_usd, tokens_per_sec, anomaly, inserted_at,
+	user_id, trace_name, obs_type`
 
 func (s *SQLiteStore) querySpanRows(ctx context.Context, query string, args ...any) ([]SpanRecord, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -640,6 +654,7 @@ func (s *SQLiteStore) querySpanRows(ctx context.Context, query string, args ...a
 			&sp.AISystem, &sp.AIModel, &sp.AIInputTokens, &sp.AIOutputTokens,
 			&sp.AgentName, &sp.AgentTaskID, &sp.AgentSessionID, &sp.ServiceName,
 			&sp.EventsJSON, &sp.CostUSD, &sp.TokensPerSec, &sp.Anomaly, &insertedStr,
+			&sp.UserID, &sp.TraceName, &sp.ObsType,
 		); err != nil {
 			rows.Close()
 			return nil, err

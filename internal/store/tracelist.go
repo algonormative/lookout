@@ -11,12 +11,14 @@ import (
 
 // TraceListFilter selects traces for QueryTraceList. Zero values are ignored.
 type TraceListFilter struct {
-	Service  string       // some span of the trace has this resource service.name
-	RootName string       // a root span of the trace has this name
-	Match    string       // a span of the trace matches this FTS5 query (see BuildMatch)
-	Attrs    []AttrFilter // some span of the trace has attribute key == value (all must hold)
-	Since    time.Time    // trace start >= Since
-	Until    time.Time    // trace start <= Until
+	Service   string       // some span of the trace has this resource service.name
+	RootName  string       // a root span of the trace has this name
+	User      string       // some span of the trace has this user_id
+	TraceName string       // some span of the trace has this trace_name
+	Match     string       // a span of the trace matches this FTS5 query (see BuildMatch)
+	Attrs     []AttrFilter // some span of the trace has attribute key == value (all must hold)
+	Since     time.Time    // trace start >= Since
+	Until     time.Time    // trace start <= Until
 	// Missing / Has require the trace to have no / at least one score (any
 	// span_id) with that name (and source, when set).
 	Missing []ScoreRef
@@ -71,6 +73,9 @@ type TraceSummary struct {
 	TotalTokens  int64          `json:"total_tokens"`
 	Error        bool           `json:"error"`
 	SessionID    string         `json:"session_id,omitempty"`
+	UserID       string         `json:"user_id,omitempty"`    // first non-empty user_id of the trace
+	TraceName    string         `json:"trace_name,omitempty"` // first non-empty trace_name
+	ObsType      string         `json:"obs_type,omitempty"`   // observation type of the root span
 	Scores       []ScoreSummary `json:"scores"`
 }
 
@@ -134,6 +139,16 @@ func (s *SQLiteStore) QueryTraceList(ctx context.Context, f TraceListFilter) (*T
 	if f.Service != "" {
 		wheres = append(wheres, "trace_id IN (SELECT trace_id FROM spans WHERE service_name = ?"+bound+")")
 		args = append(args, f.Service)
+		args = append(args, boundArgs...)
+	}
+	if f.User != "" {
+		wheres = append(wheres, "trace_id IN (SELECT trace_id FROM spans WHERE user_id = ?"+bound+")")
+		args = append(args, f.User)
+		args = append(args, boundArgs...)
+	}
+	if f.TraceName != "" {
+		wheres = append(wheres, "trace_id IN (SELECT trace_id FROM spans WHERE trace_name = ?"+bound+")")
+		args = append(args, f.TraceName)
 		args = append(args, boundArgs...)
 	}
 	if f.RootName != "" {
@@ -248,6 +263,7 @@ func (s *SQLiteStore) QueryTraceList(ctx context.Context, f TraceListFilter) (*T
 
 type lightSpan struct {
 	id, parent, name, service, model, session string
+	user, traceName, obsType                  string
 	in, out                                   int64
 	status                                    int
 	start, end                                uint64
@@ -258,7 +274,8 @@ type lightSpan struct {
 func (s *SQLiteStore) summarizeTraces(ctx context.Context, ids []string) ([]TraceSummary, error) {
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT trace_id, span_id, parent_span_id, name, service_name, ai_model, agent_session_id,
-			ai_input_tokens, ai_output_tokens, status_code, start_time_unix_nano, end_time_unix_nano
+			ai_input_tokens, ai_output_tokens, status_code, start_time_unix_nano, end_time_unix_nano,
+			user_id, trace_name, obs_type
 		FROM spans WHERE trace_id IN (%s)`, placeholders(len(ids))), toAny(ids)...)
 	if err != nil {
 		return nil, err
@@ -269,7 +286,7 @@ func (s *SQLiteStore) summarizeTraces(ctx context.Context, ids []string) ([]Trac
 		var tid string
 		var sp lightSpan
 		if err := rows.Scan(&tid, &sp.id, &sp.parent, &sp.name, &sp.service, &sp.model, &sp.session,
-			&sp.in, &sp.out, &sp.status, &sp.start, &sp.end); err != nil {
+			&sp.in, &sp.out, &sp.status, &sp.start, &sp.end, &sp.user, &sp.traceName, &sp.obsType); err != nil {
 			return nil, err
 		}
 		byTrace[tid] = append(byTrace[tid], sp)
@@ -343,12 +360,19 @@ func summarizeSpans(traceID string, spans []lightSpan) TraceSummary {
 		if sum.SessionID == "" {
 			sum.SessionID = sp.session
 		}
+		if sum.UserID == "" {
+			sum.UserID = sp.user
+		}
+		if sum.TraceName == "" {
+			sum.TraceName = sp.traceName
+		}
 	}
 	if rootIdx < 0 && len(spans) > 0 {
 		rootIdx = 0 // parent cycle; fall back to the earliest span
 	}
 	if rootIdx >= 0 {
 		sum.RootSpanName, sum.RootSpanID = spans[rootIdx].name, spans[rootIdx].id
+		sum.ObsType = spans[rootIdx].obsType
 	}
 	sum.TotalTokens = sum.InputTokens + sum.OutputTokens
 	if sum.EndNano > sum.StartNano {

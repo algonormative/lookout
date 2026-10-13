@@ -15,6 +15,9 @@ func Enrich(span *store.SpanRecord) {
 }
 
 func enrichCost(span *store.SpanRecord) {
+	if span.CostUSD > 0 {
+		return // reported by the producer
+	}
 	if span.AIModel == "" {
 		return
 	}

@@ -78,7 +78,10 @@ func searchColumns(name, statusMsg, attrsJSON, eventsJSON string) (nameCol, body
 	}
 	add(str("user_prompt"), budget)
 	add(messagesText(str("gen_ai.output.messages"), false), budget/2)
-	add(messagesText(str("gen_ai.input.messages"), true), budget)
+	add(messagesText(str("gen_ai.input.messages"), true), budget/2)
+	// Langfuse observation input/output: message arrays or plain text.
+	add(observationText(str("langfuse.observation.output")), budget/2)
+	add(observationText(str("langfuse.observation.input")), budget)
 	return strings.Join(nonEmpty(nameParts), " "), strings.Join(bodies, "\n")
 }
 
@@ -120,6 +123,18 @@ func messagesText(attr string, input bool) string {
 		}
 	}
 	return strings.Join(segs, "\n")
+}
+
+// observationText reads a langfuse.observation.input/output value: a chat
+// message array when it parses as one, otherwise the text itself.
+func observationText(v string) string {
+	if v == "" {
+		return ""
+	}
+	if msgs, ok := genai.ParseMessages(v); ok && len(msgs) > 0 {
+		return messagesText(v, true)
+	}
+	return v
 }
 
 func nonEmpty(ss []string) []string {

@@ -1,7 +1,9 @@
 package otlp
 
 import (
+	"compress/gzip"
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"io"
 	"log"
@@ -30,6 +32,7 @@ type HTTPReceiver struct {
 	filter   *Filter
 	server  *http.Server
 	addr     string
+	ingestKey string // when set, the Langfuse path requires it (see SetIngestKey)
 }
 
 // NewHTTPReceiver creates a new OTLP HTTP receiver.
@@ -44,6 +47,8 @@ func NewHTTPReceiver(addr string, s store.Store, ring *store.Ring, onSpans SpanC
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/traces", r.handleTraces)
+	// Langfuse's OTLP path: lets a Langfuse-configured exporter point here unchanged.
+	mux.HandleFunc("POST /api/public/otel/v1/traces", r.handleLangfuseTraces)
 	mux.HandleFunc("POST /v1/metrics", r.handleMetrics)
 
 	r.server = &http.Server{
@@ -69,8 +74,47 @@ func (r *HTTPReceiver) Stop(ctx context.Context) error {
 	return r.server.Shutdown(ctx)
 }
 
+// SetIngestKey makes the Langfuse path (/api/public/otel/v1/traces) require
+// key as the HTTP Basic password (Langfuse's secret key; the username is
+// ignored) or as a Bearer token. An empty key accepts any request. The plain
+// OTLP path /v1/traces is not affected.
+func (r *HTTPReceiver) SetIngestKey(key string) { r.ingestKey = key }
+
+func (r *HTTPReceiver) handleLangfuseTraces(w http.ResponseWriter, req *http.Request) {
+	if !r.authorized(req) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="lookout"`)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	r.handleTraces(w, req)
+}
+
+func (r *HTTPReceiver) authorized(req *http.Request) bool {
+	if r.ingestKey == "" {
+		return true
+	}
+	want := []byte(r.ingestKey)
+	if _, pass, ok := req.BasicAuth(); ok {
+		return subtle.ConstantTimeCompare([]byte(pass), want) == 1
+	}
+	if tok, ok := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer "); ok {
+		return subtle.ConstantTimeCompare([]byte(tok), want) == 1
+	}
+	return false
+}
+
 func (r *HTTPReceiver) handleTraces(w http.ResponseWriter, req *http.Request) {
-	body, err := io.ReadAll(req.Body)
+	var rd io.Reader = req.Body
+	if strings.EqualFold(req.Header.Get("Content-Encoding"), "gzip") {
+		gz, err := gzip.NewReader(req.Body)
+		if err != nil {
+			http.Error(w, "gzip: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		defer gz.Close()
+		rd = gz
+	}
+	body, err := io.ReadAll(rd)
 	if err != nil {
 		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
 		return

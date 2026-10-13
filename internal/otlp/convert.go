@@ -63,6 +63,8 @@ func ConvertTraceRequest(f *Filter, resourceSpans []*tracepb.ResourceSpans) []st
 				if rec.AgentSessionID == "" {
 					rec.AgentSessionID = fallbackSessionID(span.GetAttributes(), rs.GetResource().GetAttributes())
 				}
+				extractIdentity(&rec, span.GetAttributes(), rs.GetResource().GetAttributes())
+				extractCost(&rec, span.GetAttributes())
 
 				// Capture span events (prompts, completions, tool messages)
 				rec.EventsJSON = marshalEvents(f, span.GetEvents(), slim)
@@ -109,6 +111,70 @@ func fallbackSessionID(spanAttrs, resAttrs []*commonpb.KeyValue) string {
 		}
 	}
 	return ""
+}
+
+// lookupAttr returns the first non-empty text value for keys, trying each key
+// in order and, per key, span attributes before resource attributes.
+func lookupAttr(keys []string, spanAttrs, resAttrs []*commonpb.KeyValue) string {
+	for _, key := range keys {
+		for _, attrs := range [][]*commonpb.KeyValue{spanAttrs, resAttrs} {
+			for _, kv := range attrs {
+				if kv.GetKey() == key {
+					if v := kvString(kv.GetValue()); v != "" {
+						return v
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// extractIdentity maps Langfuse-style attributes: user (langfuse.user.id, else
+// user.id), trace name (langfuse.trace.name) and observation type
+// (langfuse.observation.type; inferred when absent: generation when a model is
+// set, tool for claude_code.tool spans, else span). The backfill in
+// store/backfill.go mirrors these rules.
+func extractIdentity(rec *store.SpanRecord, spanAttrs, resAttrs []*commonpb.KeyValue) {
+	rec.UserID = lookupAttr([]string{"langfuse.user.id", "user.id"}, spanAttrs, resAttrs)
+	rec.TraceName = lookupAttr([]string{"langfuse.trace.name"}, spanAttrs, resAttrs)
+	rec.ObsType = lookupAttr([]string{"langfuse.observation.type"}, spanAttrs, nil)
+	if rec.ObsType == "" {
+		switch {
+		case rec.AIModel != "":
+			rec.ObsType = "generation"
+		case rec.Name == "claude_code.tool":
+			rec.ObsType = "tool"
+		default:
+			rec.ObsType = "span"
+		}
+	}
+}
+
+// extractCost reads a producer-reported USD cost (LiteLLM:
+// gen_ai.cost.total_cost; others: gen_ai.usage.cost). Zero or absent leaves
+// CostUSD unset so enrichment can fall back to the pricing table.
+func extractCost(rec *store.SpanRecord, attrs []*commonpb.KeyValue) {
+	for _, key := range []string{ai.AttrGenAICostTotal, ai.AttrGenAIUsageCost} {
+		for _, kv := range attrs {
+			if kv.GetKey() != key {
+				continue
+			}
+			var c float64
+			switch x := kv.GetValue().GetValue().(type) {
+			case *commonpb.AnyValue_DoubleValue:
+				c = x.DoubleValue
+			case *commonpb.AnyValue_IntValue:
+				c = float64(x.IntValue)
+			case *commonpb.AnyValue_StringValue:
+				c, _ = strconv.ParseFloat(x.StringValue, 64)
+			}
+			if c > 0 {
+				rec.CostUSD = c
+				return
+			}
+		}
+	}
 }
 
 // kvString renders scalar attribute values as text (session ids are sometimes

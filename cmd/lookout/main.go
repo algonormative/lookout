@@ -119,6 +119,7 @@ func cmdServe(args []string) {
 
 	// Create OTLP receivers
 	otlpHTTP := otlp.NewHTTPReceiver(cfg.HTTPAddr, sqlStore, ring, apiServer.BroadcastSpans, filter)
+	otlpHTTP.SetIngestKey(cfg.IngestKey)
 	otlpGRPC := otlp.NewGRPCReceiver(cfg.GRPCAddr, sqlStore, ring, apiServer.BroadcastSpans, filter)
 
 	// Start servers

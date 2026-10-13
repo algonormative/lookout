@@ -82,6 +82,8 @@ func NewServer(s store.Store) *server.MCPServer {
 		gomcp.WithDescription("List traces (one row per trace: root span, services, start, duration, span count, models, tokens, error flag, session, scores). Cursor-paged, newest first by default. Judge loop: filter with missing_score to find traces a judge has not scored yet."),
 		gomcp.WithString("service", gomcp.Description("Trace has a span from this service.name")),
 		gomcp.WithString("root_name", gomcp.Description("Root span name, e.g. claude_code.interaction")),
+		gomcp.WithString("user", gomcp.Description("Trace has a span with this user_id (langfuse.user.id / user.id)")),
+		gomcp.WithString("trace_name", gomcp.Description("Trace has a span with this trace_name (langfuse.trace.name)")),
 		gomcp.WithArray("attr", gomcp.Description("key=value span attribute filters (all must match)"), gomcp.WithStringItems()),
 		gomcp.WithString("since", gomcp.Description("Trace start >= (e.g. 1h, 7d, or RFC3339); strongly recommended")),
 		gomcp.WithString("until", gomcp.Description("Trace start <=")),
@@ -309,6 +311,8 @@ func (h *handlers) queryTraceList(ctx context.Context, req gomcp.CallToolRequest
 	f := store.TraceListFilter{
 		Service:  req.GetString("service", ""),
 		RootName: req.GetString("root_name", ""),
+		User:      req.GetString("user", ""),
+		TraceName: req.GetString("trace_name", ""),
 		Since:    parseDuration(req.GetString("since", "")),
 		Until:    parseDuration(req.GetString("until", "")),
 		Asc:      req.GetString("order", "") == "asc",

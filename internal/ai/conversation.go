@@ -39,7 +39,9 @@ func DecodeConversation(spans []store.SpanRecord) []ConversationTurn {
 	})
 
 	var turns []ConversationTurn
+	ms := newMessageState()
 	for _, s := range ordered {
+		before := len(turns)
 		switch s.Name {
 		case SpanChatCompletion:
 			turns = append(turns, decodeChatTurns(s)...)
@@ -47,6 +49,11 @@ func DecodeConversation(spans []store.SpanRecord) []ConversationTurn {
 			if t, ok := decodeToolTurn(s); ok {
 				turns = append(turns, t)
 			}
+		}
+		if len(turns) == before {
+			// No event-based turns: LiteLLM-style spans carry the messages as
+			// gen_ai.input.messages / gen_ai.output.messages attributes.
+			turns = append(turns, ms.decode(s)...)
 		}
 	}
 	return turns

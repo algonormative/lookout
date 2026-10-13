@@ -30,6 +30,10 @@ type Config struct {
 	// CompressMinBytes: spans whose attributes+events JSON exceed this are
 	// stored with compressed payloads (internal/store/payload.go). 0 disables.
 	CompressMinBytes int
+
+	// IngestKey, when set, is required (Basic password or Bearer) on the
+	// Langfuse OTLP path /api/public/otel/v1/traces.
+	IngestKey string
 }
 
 // DefaultDropSpans is the LiteLLM (llm-proxy) plumbing that has no analytic value.
@@ -120,6 +124,9 @@ func (c *Config) ApplyEnv() {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.CompressMinBytes = n
 		}
+	}
+	if v := os.Getenv("LOOKOUT_INGEST_KEY"); v != "" {
+		c.IngestKey = v
 	}
 	if v := os.Getenv("LOOKOUT_ARCHIVE_DIR"); v != "" {
 		c.ArchiveDir = v

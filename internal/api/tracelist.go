@@ -9,9 +9,11 @@ import (
 func (s *Server) handleTraceList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := store.TraceListFilter{
-		Service:  q.Get("service"),
-		RootName: q.Get("root_name"),
-		Cursor:   q.Get("cursor"),
+		Service:   q.Get("service"),
+		RootName:  q.Get("root_name"),
+		User:      q.Get("user"),
+		TraceName: q.Get("trace_name"),
+		Cursor:    q.Get("cursor"),
 	}
 	var err error
 	if f.Since, err = parseSince(r, "since"); err == nil {

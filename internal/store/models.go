@@ -33,6 +33,13 @@ type SpanRecord struct {
 	// ServiceName is the resource service.name of the producer.
 	ServiceName string `json:"service_name,omitempty"`
 
+	// Langfuse-style identity: user (langfuse.user.id, else user.id), trace
+	// name (langfuse.trace.name) and observation type (langfuse.observation.type,
+	// else inferred: generation / tool / span).
+	UserID    string `json:"user_id,omitempty"`
+	TraceName string `json:"trace_name,omitempty"`
+	ObsType   string `json:"obs_type,omitempty"`
+
 	// Span events (prompts, completions, tool messages)
 	EventsJSON string `json:"events_json,omitempty"`
 

@@ -31,6 +31,11 @@ func (s *SQLiteStore) startBackfill() {
 				log.Printf("search backfill error: %v", err)
 			}
 		}
+		if ctx.Err() == nil {
+			if err := s.backfillIdentity(ctx); err != nil && ctx.Err() == nil {
+				log.Printf("identity backfill error: %v", err)
+			}
+		}
 	}()
 }
 
@@ -105,3 +110,66 @@ UPDATE spans SET
 			'')
 		ELSE '' END
 WHERE rowid >= ? AND rowid < ? AND service_name = ''`
+
+const identityKey = "backfill_identity_v1"
+
+// backfillIdentity fills user_id, trace_name and obs_type for rows written
+// before those columns existed, mirroring ingest (otlp.extractIdentity). Rows
+// ingested since carry a non-empty obs_type and are skipped, so it is
+// idempotent and resumable.
+func (s *SQLiteStore) backfillIdentity(ctx context.Context) error {
+	var done string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, identityKey).Scan(&done)
+	if err == nil && done == "1" {
+		return nil
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	var lo, hi sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT MIN(rowid), MAX(rowid) FROM spans`).Scan(&lo, &hi); err != nil {
+		return err
+	}
+	if lo.Valid {
+		start := time.Now()
+		var updated int64
+		for from := lo.Int64; from <= hi.Int64; from += backfillBatch {
+			res, err := s.db.ExecContext(ctx, identityBackfillSQL, from, from+backfillBatch)
+			if err != nil {
+				return err
+			}
+			n, _ := res.RowsAffected()
+			updated += n
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backfillPause):
+			}
+		}
+		log.Printf("backfill: user/trace name/observation type for %d spans in %s", updated, time.Since(start).Round(time.Millisecond))
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO meta(key, value) VALUES (?, '1')
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, identityKey)
+	return err
+}
+
+// identityBackfillSQL: attribute lookups go span attributes first, then
+// resource attributes, langfuse.* keys before the generic user.id. The
+// attributes column may be the "lite" form; these keys are small so they are
+// always present there. obs_type falls back to the ingest inference.
+const identityBackfillSQL = `
+UPDATE spans SET
+	user_id = COALESCE(
+		CASE WHEN json_valid(attributes_json) THEN NULLIF(CAST(json_extract(attributes_json, '$."langfuse.user.id"') AS TEXT), '') END,
+		CASE WHEN json_valid(resource_json) THEN NULLIF(CAST(json_extract(resource_json, '$."langfuse.user.id"') AS TEXT), '') END,
+		CASE WHEN json_valid(attributes_json) THEN NULLIF(CAST(json_extract(attributes_json, '$."user.id"') AS TEXT), '') END,
+		CASE WHEN json_valid(resource_json) THEN NULLIF(CAST(json_extract(resource_json, '$."user.id"') AS TEXT), '') END,
+		''),
+	trace_name = COALESCE(
+		CASE WHEN json_valid(attributes_json) THEN NULLIF(CAST(json_extract(attributes_json, '$."langfuse.trace.name"') AS TEXT), '') END,
+		CASE WHEN json_valid(resource_json) THEN NULLIF(CAST(json_extract(resource_json, '$."langfuse.trace.name"') AS TEXT), '') END,
+		''),
+	obs_type = COALESCE(
+		CASE WHEN json_valid(attributes_json) THEN NULLIF(CAST(json_extract(attributes_json, '$."langfuse.observation.type"') AS TEXT), '') END,
+		CASE WHEN ai_model <> '' THEN 'generation' WHEN name = 'claude_code.tool' THEN 'tool' ELSE 'span' END)
+WHERE rowid >= ? AND rowid < ? AND obs_type = ''`
