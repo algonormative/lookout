@@ -15,6 +15,7 @@ import (
 // SQLiteStore implements Store using modernc.org/sqlite.
 type SQLiteStore struct {
 	db         *sql.DB
+	opts       Options
 	lastVacuum time.Time // only touched by the single retention goroutine
 
 	backfillCancel context.CancelFunc
@@ -22,7 +23,10 @@ type SQLiteStore struct {
 }
 
 // NewSQLiteStore opens or creates a SQLite database at the given path.
-func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
+//
+// An optional Options value enables the size cap, span archive, etc.; without
+// one the store behaves as plain retention-only storage.
+func NewSQLiteStore(dbPath string, opts ...Options) (*SQLiteStore, error) {
 	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
@@ -30,6 +34,9 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	db.SetMaxOpenConns(1)
 
 	s := &SQLiteStore{db: db}
+	if len(opts) > 0 {
+		s.opts = opts[0]
+	}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
@@ -511,22 +518,27 @@ func (s *SQLiteStore) ListMetricNames(ctx context.Context) ([]string, error) {
 	return names, rows.Err()
 }
 
+// Cleanup deletes spans older than the retention period, then enforces the
+// size cap (Options.MaxDBBytes). It returns the number of spans deleted by
+// both. Every deletion is archived first when Options.ArchiveDir is set; if the
+// archive write fails nothing further is deleted and the error is returned.
 func (s *SQLiteStore) Cleanup(ctx context.Context, retentionDays int) (int64, error) {
 	cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour).UnixNano()
-	result, err := s.db.ExecContext(ctx, "DELETE FROM spans WHERE start_time_unix_nano < ?", cutoff)
+	n, err := s.deleteExpired(ctx, cutoff)
 	if err != nil {
-		return 0, err
+		return n, err
 	}
-	n, _ := result.RowsAffected()
 
 	// Also cleanup old metric rollups
 	metricCutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour).Unix()
 	s.db.ExecContext(ctx, "DELETE FROM metric_rollups WHERE bucket_start < ?", metricCutoff)
 
+	capN, capErr := s.enforceCap(ctx)
+	n += capN
 	if n > 0 {
-		s.maybeVacuum(ctx)
+		s.maybeVacuum(ctx, capN > 0)
 	}
-	return n, nil
+	return n, capErr
 }
 
 // vacuumInterval is the minimum time between full VACUUMs.
@@ -542,8 +554,11 @@ const vacuumInterval = 24 * time.Hour
 // (and our single connection) while it runs, so concurrent ingest briefly
 // waits (busy_timeout 5s; the receivers return an error on a longer stall and
 // the sender retries). The WAL is then truncated so the -wal file shrinks too.
-func (s *SQLiteStore) maybeVacuum(ctx context.Context) {
-	if !s.lastVacuum.IsZero() && time.Since(s.lastVacuum) < vacuumInterval {
+//
+// force skips the throttle; the size cap uses it because deleting for the cap
+// is only useful once the file actually shrinks.
+func (s *SQLiteStore) maybeVacuum(ctx context.Context, force bool) {
+	if !force && !s.lastVacuum.IsZero() && time.Since(s.lastVacuum) < vacuumInterval {
 		return
 	}
 	s.lastVacuum = time.Now()

@@ -81,6 +81,8 @@ func cmdServe(args []string) {
 	fs.IntVar(&cfg.MaxAttrBytes, "max-attr-bytes", cfg.MaxAttrBytes, "Truncate attribute strings longer than N bytes (0 disables)")
 	fs.StringVar(&cfg.SlimSpans, "slim-spans", cfg.SlimSpans, "Comma-separated service:span pairs whose large attribute values are removed (empty disables)")
 	fs.IntVar(&cfg.SlimAttrBytes, "slim-attr-bytes", cfg.SlimAttrBytes, "On slim spans, remove attribute values larger than N bytes")
+	fs.IntVar(&cfg.MaxDBMB, "max-db-mb", cfg.MaxDBMB, "Cap on used DB size in MB; oldest traces are deleted above it (0 disables)")
+	fs.StringVar(&cfg.ArchiveDir, "archive-dir", cfg.ArchiveDir, "Write spans here (spans-YYYY-MM-DD.jsonl.gz) before deleting them (empty disables)")
 	fs.Parse(args)
 
 	filter, err := otlp.NewFilter(cfg.DropSpans, cfg.SlimSpans, cfg.MaxAttrBytes, cfg.SlimAttrBytes)
@@ -94,7 +96,10 @@ func cmdServe(args []string) {
 	}
 
 	// Open store
-	sqlStore, err := store.NewSQLiteStore(cfg.DBPath)
+	sqlStore, err := store.NewSQLiteStore(cfg.DBPath, store.Options{
+		MaxDBBytes: int64(cfg.MaxDBMB) << 20,
+		ArchiveDir: cfg.ArchiveDir,
+	})
 	if err != nil {
 		log.Fatalf("open store: %v", err)
 	}

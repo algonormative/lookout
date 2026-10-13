@@ -22,6 +22,10 @@ type Config struct {
 	MaxAttrBytes  int    // truncate attribute strings longer than this; 0 disables
 	SlimSpans     string // "service:span" pairs whose large attribute values are removed; "" disables
 	SlimAttrBytes int    // on SlimSpans, remove attribute values larger than this
+
+	// Storage controls (see internal/store/retention.go).
+	MaxDBMB    int    // cap on used DB size; oldest whole traces are deleted above it. 0 disables
+	ArchiveDir string // spans are written here (gzip JSONL per day) before deletion; "" disables
 }
 
 // DefaultDropSpans is the LiteLLM (llm-proxy) plumbing that has no analytic value.
@@ -46,6 +50,7 @@ func Default() Config {
 		MaxAttrBytes:  32 * 1024,
 		SlimSpans:     DefaultSlimSpans,
 		SlimAttrBytes: 2 * 1024,
+		MaxDBMB:       1024,
 	}
 }
 
@@ -99,5 +104,13 @@ func (c *Config) ApplyEnv() {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.SlimAttrBytes = n
 		}
+	}
+	if v := os.Getenv("LOOKOUT_MAX_DB_MB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.MaxDBMB = n
+		}
+	}
+	if v := os.Getenv("LOOKOUT_ARCHIVE_DIR"); v != "" {
+		c.ArchiveDir = v
 	}
 }
