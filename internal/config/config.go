@@ -26,6 +26,10 @@ type Config struct {
 	// Storage controls (see internal/store/retention.go).
 	MaxDBMB    int    // cap on used DB size; oldest whole traces are deleted above it. 0 disables
 	ArchiveDir string // spans are written here (gzip JSONL per day) before deletion; "" disables
+
+	// CompressMinBytes: spans whose attributes+events JSON exceed this are
+	// stored with compressed payloads (internal/store/payload.go). 0 disables.
+	CompressMinBytes int
 }
 
 // DefaultDropSpans is the LiteLLM (llm-proxy) plumbing that has no analytic value.
@@ -51,6 +55,8 @@ func Default() Config {
 		SlimSpans:     DefaultSlimSpans,
 		SlimAttrBytes: 2 * 1024,
 		MaxDBMB:       1024,
+
+		CompressMinBytes: 4096,
 	}
 }
 
@@ -108,6 +114,11 @@ func (c *Config) ApplyEnv() {
 	if v := os.Getenv("LOOKOUT_MAX_DB_MB"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.MaxDBMB = n
+		}
+	}
+	if v := os.Getenv("LOOKOUT_COMPRESS_MIN_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.CompressMinBytes = n
 		}
 	}
 	if v := os.Getenv("LOOKOUT_ARCHIVE_DIR"); v != "" {

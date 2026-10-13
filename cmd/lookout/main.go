@@ -40,6 +40,8 @@ func main() {
 		cmdMCPServe(os.Args[2:])
 	case "dash":
 		cmdDash(os.Args[2:])
+	case "compact":
+		cmdCompact(os.Args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -61,6 +63,7 @@ Commands:
   mcp       Start MCP server (stdio)
   mcp-serve Start MCP server (HTTP)
   dash      Launch TUI dashboard
+  compact   Compress existing large spans in the database (batched; safe on a live DB)
 
 Run "lookout <command> --help" for details.`)
 }
@@ -83,6 +86,7 @@ func cmdServe(args []string) {
 	fs.IntVar(&cfg.SlimAttrBytes, "slim-attr-bytes", cfg.SlimAttrBytes, "On slim spans, remove attribute values larger than N bytes")
 	fs.IntVar(&cfg.MaxDBMB, "max-db-mb", cfg.MaxDBMB, "Cap on used DB size in MB; oldest traces are deleted above it (0 disables)")
 	fs.StringVar(&cfg.ArchiveDir, "archive-dir", cfg.ArchiveDir, "Write spans here (spans-YYYY-MM-DD.jsonl.gz) before deleting them (empty disables)")
+	fs.IntVar(&cfg.CompressMinBytes, "compress-min-bytes", cfg.CompressMinBytes, "Store spans whose attributes+events exceed N bytes with compressed payloads (0 disables)")
 	fs.Parse(args)
 
 	filter, err := otlp.NewFilter(cfg.DropSpans, cfg.SlimSpans, cfg.MaxAttrBytes, cfg.SlimAttrBytes)
@@ -99,6 +103,8 @@ func cmdServe(args []string) {
 	sqlStore, err := store.NewSQLiteStore(cfg.DBPath, store.Options{
 		MaxDBBytes: int64(cfg.MaxDBMB) << 20,
 		ArchiveDir: cfg.ArchiveDir,
+
+		CompressMinBytes: cfg.CompressMinBytes,
 	})
 	if err != nil {
 		log.Fatalf("open store: %v", err)
@@ -177,6 +183,55 @@ func cmdMCPServe(args []string) {
 	log.Printf("MCP HTTP server listening on %s", *addr)
 	if err := httpSrv.Start(*addr); err != nil {
 		log.Fatalf("mcp-serve: %v", err)
+	}
+}
+
+// cmdCompact converts spans stored before compression existed. It is never
+// run automatically. It works in short batches, so it may run while `serve`
+// is up (ingest waits at most one batch); freed pages are reused by SQLite and
+// the file shrinks at the next VACUUM (the server's after retention deletes,
+// or --vacuum here, which holds the write lock while it rewrites the file).
+func cmdCompact(args []string) {
+	cfg := config.Default()
+	cfg.ApplyEnv()
+
+	fs := flag.NewFlagSet("compact", flag.ExitOnError)
+	fs.StringVar(&cfg.DBPath, "db-path", cfg.DBPath, "SQLite database path")
+	fs.IntVar(&cfg.CompressMinBytes, "compress-min-bytes", cfg.CompressMinBytes, "Compress spans whose attributes+events exceed N bytes")
+	vacuum := fs.Bool("vacuum", false, "VACUUM afterwards to shrink the file (blocks writers while it runs)")
+	fs.Parse(args)
+
+	if cfg.CompressMinBytes <= 0 {
+		log.Fatal("compact: --compress-min-bytes must be > 0")
+	}
+	if _, err := os.Stat(cfg.DBPath); err != nil {
+		log.Fatalf("compact: %v", err)
+	}
+	sqlStore, err := store.NewSQLiteStore(cfg.DBPath)
+	if err != nil {
+		log.Fatalf("open store: %v", err)
+	}
+	defer sqlStore.Close()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	last := time.Now()
+	st, err := sqlStore.Compact(ctx, cfg.CompressMinBytes, func(st store.CompactStats) {
+		if time.Since(last) > 5*time.Second {
+			last = time.Now()
+			fmt.Fprintf(os.Stderr, "compact: %d spans converted, %d MB -> %d MB\n", st.Converted, st.BytesIn>>20, st.BytesOut>>20)
+		}
+	})
+	fmt.Printf("converted %d of %d large spans: %d MB -> %d MB (re-run to resume if interrupted)\n",
+		st.Converted, st.Scanned, st.BytesIn>>20, st.BytesOut>>20)
+	if err != nil {
+		log.Fatalf("compact: %v", err)
+	}
+	if *vacuum && st.Converted > 0 {
+		fmt.Println("vacuuming...")
+		if err := sqlStore.Vacuum(ctx); err != nil {
+			log.Fatalf("vacuum: %v", err)
+		}
 	}
 }
 

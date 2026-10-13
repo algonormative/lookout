@@ -22,6 +22,9 @@ type Options struct {
 	// ArchiveDir, when set, receives every span before it is deleted (see
 	// archiveSpans). Empty disables.
 	ArchiveDir string
+	// CompressMinBytes: spans whose attributes_json + events_json exceed this
+	// get their heavy parts stored compressed (see payload.go). 0 disables.
+	CompressMinBytes int
 }
 
 const (

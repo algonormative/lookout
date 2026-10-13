@@ -111,6 +111,9 @@ func (s *SQLiteStore) migrate() error {
 		return err
 	}
 
+	if err := s.migratePayloads(); err != nil {
+		return err
+	}
 	return s.migrateScores()
 }
 
@@ -129,8 +132,22 @@ func (s *SQLiteStore) InsertSpans(ctx context.Context, spans []SpanRecord) error
 	}
 	defer tx.Rollback()
 
+	// A re-sent span replaces the old row. The delete is explicit (rather than
+	// INSERT OR REPLACE) so delete triggers fire and dependent rows (payloads)
+	// are cleaned up.
+	del, err := tx.PrepareContext(ctx, `DELETE FROM spans WHERE span_id = ?`)
+	if err != nil {
+		return err
+	}
+	defer del.Close()
+	putPayload, err := tx.PrepareContext(ctx, `INSERT INTO span_payloads(span_id, codec, data) VALUES (?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer putPayload.Close()
+
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT OR REPLACE INTO spans (
+		INSERT INTO spans (
 			trace_id, span_id, parent_span_id, name, kind,
 			start_time_unix_nano, end_time_unix_nano,
 			attributes_json, resource_json,
@@ -151,10 +168,17 @@ func (s *SQLiteStore) InsertSpans(ctx context.Context, spans []SpanRecord) error
 		if eventsJSON == "" {
 			eventsJSON = "[]"
 		}
-		_, err := stmt.ExecContext(ctx,
+		attrsJSON, eventsJSON, payload, err := packSpan(sp.AttributesJSON, eventsJSON, s.opts.CompressMinBytes)
+		if err != nil {
+			return fmt.Errorf("compress span %s: %w", sp.SpanID, err)
+		}
+		if _, err := del.ExecContext(ctx, sp.SpanID); err != nil {
+			return fmt.Errorf("replace span %s: %w", sp.SpanID, err)
+		}
+		_, err = stmt.ExecContext(ctx,
 			sp.TraceID, sp.SpanID, sp.ParentSpanID, sp.Name, sp.Kind,
 			sp.StartTimeUnixNano, sp.EndTimeUnixNano,
-			sp.AttributesJSON, sp.ResourceJSON,
+			attrsJSON, sp.ResourceJSON,
 			sp.StatusCode, sp.StatusMessage,
 			sp.AISystem, sp.AIModel, sp.AIInputTokens, sp.AIOutputTokens,
 			sp.AgentName, sp.AgentTaskID, sp.AgentSessionID, sp.ServiceName,
@@ -163,6 +187,11 @@ func (s *SQLiteStore) InsertSpans(ctx context.Context, spans []SpanRecord) error
 		)
 		if err != nil {
 			return fmt.Errorf("insert span %s: %w", sp.SpanID, err)
+		}
+		if payload != nil {
+			if _, err := putPayload.ExecContext(ctx, sp.SpanID, codecFlate, payload); err != nil {
+				return fmt.Errorf("insert payload %s: %w", sp.SpanID, err)
+			}
 		}
 	}
 
@@ -584,7 +613,6 @@ func (s *SQLiteStore) querySpanRows(ctx context.Context, query string, args ...a
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
 	var result []SpanRecord
 	for rows.Next() {
@@ -599,12 +627,21 @@ func (s *SQLiteStore) querySpanRows(ctx context.Context, query string, args ...a
 			&sp.AgentName, &sp.AgentTaskID, &sp.AgentSessionID, &sp.ServiceName,
 			&sp.EventsJSON, &sp.CostUSD, &sp.TokensPerSec, &sp.Anomaly, &insertedStr,
 		); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		sp.InsertedAt, _ = time.Parse(time.RFC3339, insertedStr)
 		result = append(result, sp)
 	}
-	return result, rows.Err()
+	// The cursor must be closed before restorePayloads: one connection.
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.restorePayloads(ctx, result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func buildSpanWhere(filter SpanFilter) (string, []any) {
